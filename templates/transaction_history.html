@@ -1,0 +1,179 @@
+{% extends 'base.html' %}
+
+{% block title %}Histórico de Transações - FIDC System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2><i class="bi bi-clock-history"></i> Histórico de Transações</h2>
+        <p class="text-muted">Auditoria completa de todas as operações realizadas no sistema</p>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-3">
+    <div class="card-header">
+        <i class="bi bi-funnel"></i> Filtros
+    </div>
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('transaction_history') }}">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Entidade</label>
+                    <select name="entity" class="form-select">
+                        <option value="">Todas</option>
+                        <option value="boleto" {% if entity_filter == 'boleto' %}selected{% endif %}>Boletos</option>
+                        <option value="invoice" {% if entity_filter == 'invoice' %}selected{% endif %}>Faturas</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Ação</label>
+                    <select name="action" class="form-select">
+                        <option value="">Todas</option>
+                        <option value="created" {% if action_filter == 'created' %}selected{% endif %}>Criado</option>
+                        <option value="updated" {% if action_filter == 'updated' %}selected{% endif %}>Atualizado</option>
+                        <option value="deleted" {% if action_filter == 'deleted' %}selected{% endif %}>Excluído</option>
+                        <option value="approved" {% if action_filter == 'approved' %}selected{% endif %}>Aprovado</option>
+                        <option value="cancelled" {% if action_filter == 'cancelled' %}selected{% endif %}>Cancelado</option>
+                        <option value="registered" {% if action_filter == 'registered' %}selected{% endif %}>Registrado</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Por Página</label>
+                    <select name="per_page" class="form-select">
+                        <option value="20">20</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">&nbsp;</label>
+                    <div class="d-grid gap-2 d-md-flex">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-search"></i> Filtrar
+                        </button>
+                        <a href="{{ url_for('transaction_history') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-arrow-clockwise"></i> Limpar
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- History Table -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list-ul"></i> Registro de Atividades</span>
+        <span class="badge bg-primary">{{ pagination.total }} registro(s)</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Data/Hora</th>
+                        <th>Usuário</th>
+                        <th>Tipo</th>
+                        <th>ID</th>
+                        <th>Ação</th>
+                        <th>Detalhes</th>
+                        <th>IP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in history %}
+                    <tr>
+                        <td>
+                            <small>{{ record.timestamp.strftime('%d/%m/%Y %H:%M:%S') }}</small>
+                        </td>
+                        <td>
+                            <span class="badge bg-secondary">{{ record.user.username }}</span>
+                            <br><small class="text-muted">{{ record.user.role }}</small>
+                        </td>
+                        <td>
+                            {% if record.entity_type == 'boleto' %}
+                                <span class="badge bg-info"><i class="bi bi-receipt"></i> Boleto</span>
+                            {% else %}
+                                <span class="badge bg-warning"><i class="bi bi-file-text"></i> Fatura</span>
+                            {% endif %}
+                        </td>
+                        <td><code>#{{ record.entity_id }}</code></td>
+                        <td>
+                            {% if record.action == 'created' %}
+                                <span class="badge bg-success"><i class="bi bi-plus-circle"></i> Criado</span>
+                            {% elif record.action == 'updated' %}
+                                <span class="badge bg-primary"><i class="bi bi-pencil"></i> Atualizado</span>
+                            {% elif record.action == 'deleted' %}
+                                <span class="badge bg-danger"><i class="bi bi-trash"></i> Excluído</span>
+                            {% elif record.action == 'approved' %}
+                                <span class="badge bg-success"><i class="bi bi-check-circle"></i> Aprovado</span>
+                            {% elif record.action == 'cancelled' %}
+                                <span class="badge bg-warning"><i class="bi bi-x-circle"></i> Cancelado</span>
+                            {% elif record.action == 'registered' %}
+                                <span class="badge bg-info"><i class="bi bi-check2-all"></i> Registrado</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ record.action }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if record.details %}
+                                <button class="btn btn-sm btn-outline-info" type="button" data-bs-toggle="collapse" data-bs-target="#details{{ record.id }}">
+                                    <i class="bi bi-info-circle"></i> Ver
+                                </button>
+                                <div class="collapse mt-2" id="details{{ record.id }}">
+                                    <div class="card card-body">
+                                        <pre class="mb-0"><small>{{ record.details }}</small></pre>
+                                    </div>
+                                </div>
+                            {% else %}
+                                <small class="text-muted">-</small>
+                            {% endif %}
+                        </td>
+                        <td><small class="text-muted">{{ record.ip_address or '-' }}</small></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center py-4">
+                            <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+                            <p class="text-muted mt-2">Nenhum registro encontrado.</p>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Pagination -->
+    {% if pagination.pages > 1 %}
+    <div class="card-footer">
+        <nav>
+            <ul class="pagination pagination-sm mb-0 justify-content-center">
+                <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+                    <a class="page-link" href="{{ url_for('transaction_history', page=pagination.prev_num, per_page=request.args.get('per_page', 50), entity=entity_filter, action=action_filter) }}">Anterior</a>
+                </li>
+                
+                {% for page_num in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                    {% if page_num %}
+                        <li class="page-item {% if page_num == pagination.page %}active{% endif %}">
+                            <a class="page-link" href="{{ url_for('transaction_history', page=page_num, per_page=request.args.get('per_page', 50), entity=entity_filter, action=action_filter) }}">{{ page_num }}</a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% endfor %}
+                
+                <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+                    <a class="page-link" href="{{ url_for('transaction_history', page=pagination.next_num, per_page=request.args.get('per_page', 50), entity=entity_filter, action=action_filter) }}">Próxima</a>
+                </li>
+            </ul>
+        </nav>
+        <p class="text-center text-muted mt-2 mb-0">
+            <small>Exibindo {{ pagination.per_page * (pagination.page - 1) + 1 }} - {{ [pagination.per_page * pagination.page, pagination.total]|min }} de {{ pagination.total }} registros</small>
+        </p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

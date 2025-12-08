@@ -29,7 +29,7 @@
                             <input type="checkbox" name="boleto_ids" value="{{ boleto.id }}">
                             {% endif %}
                         </td>
-                        <td>{{ boleto.user.username }}</td>
+                        <td>{{ boleto.cedente.username }}</td>
                         <td>{{ boleto.sacado_name }}</td>
                         <td>{{ boleto.amount }}</td>
                         <td>{{ boleto.due_date }}</td>
