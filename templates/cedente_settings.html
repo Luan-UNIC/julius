@@ -1,116 +1,177 @@
 {% extends 'base.html' %}
 
+{% block title %}Configurações - FIDC System{% endblock %}
+
 {% block content %}
-<h2>Settings</h2>
-<p class="text-muted">Configure your bank accounts for Boleto generation.</p>
+<h2><i class="bi bi-gear"></i> Configurações Bancárias</h2>
+<p class="text-muted">Configure suas contas bancárias para geração de boletos. Pelo menos um banco deve estar ativo.</p>
 
-<div class="row">
-    <!-- Santander Config -->
-    <div class="col-md-6">
-        <div class="card mb-3">
-            <div class="card-header bg-danger text-white">Santander (FIDC)</div>
-            <div class="card-body">
-                <form method="POST">
+<form method="POST" id="settingsForm">
+    <div class="row">
+        <!-- Santander Config -->
+        <div class="col-md-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-bank"></i> Santander (FIDC)</span>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="santander_active" name="santander_active" 
+                               {% if santander.is_active %}checked{% endif %} 
+                               onchange="updateBankStatus('santander', this.checked)">
+                        <label class="form-check-label" for="santander_active">
+                            <span id="santander_status_badge" class="badge bg-{% if santander.is_active %}success{% else %}secondary{% endif %}">
+                                {% if santander.is_active %}Ativo{% else %}Inativo{% endif %}
+                            </span>
+                        </label>
+                    </div>
+                </div>
+                <div class="card-body">
                     <div class="mb-2">
-                        <label class="form-label">Agency</label>
-                        <input type="text" class="form-control" name="santander_agency" value="{{ santander.agency }}">
+                        <label class="form-label">Agência</label>
+                        <input type="text" class="form-control" name="santander_agency" value="{{ santander.agency }}" required>
                     </div>
                     <div class="mb-2">
-                        <label class="form-label">Account</label>
-                        <input type="text" class="form-control" name="santander_account" value="{{ santander.account }}">
+                        <label class="form-label">Conta</label>
+                        <input type="text" class="form-control" name="santander_account" value="{{ santander.account }}" required>
                     </div>
                     <div class="mb-2">
-                        <label class="form-label">Wallet (Carteira)</label>
-                        <input type="text" class="form-control" name="santander_wallet" value="{{ santander.wallet }}">
+                        <label class="form-label">Carteira</label>
+                        <input type="text" class="form-control" name="santander_wallet" value="{{ santander.wallet }}" required>
                     </div>
                     <div class="mb-2">
-                        <label class="form-label">Convenio</label>
-                        <input type="text" class="form-control" name="santander_convenio" value="{{ santander.convenio }}">
+                        <label class="form-label">Convênio</label>
+                        <input type="text" class="form-control" name="santander_convenio" value="{{ santander.convenio }}" required>
                     </div>
                     <hr>
-                    <h6>Nosso Numero Range</h6>
+                    <h6><i class="bi bi-hash"></i> Faixa de Nosso Número</h6>
                     <div class="row">
-                        <div class="col">
-                            <label class="form-label">Min</label>
-                            <input type="number" class="form-control" name="santander_min_nn" value="{{ santander.min_nosso_numero }}">
+                        <div class="col-6">
+                            <label class="form-label">Mínimo</label>
+                            <input type="number" class="form-control" name="santander_min_nn" value="{{ santander.min_nosso_numero }}" required>
                         </div>
-                        <div class="col">
-                            <label class="form-label">Max</label>
-                            <input type="number" class="form-control" name="santander_max_nn" value="{{ santander.max_nosso_numero }}">
+                        <div class="col-6">
+                            <label class="form-label">Máximo</label>
+                            <input type="number" class="form-control" name="santander_max_nn" value="{{ santander.max_nosso_numero }}" required>
                         </div>
                     </div>
                     <div class="mt-2">
-                        <label class="form-label">Current Next</label>
-                        <input type="number" class="form-control" name="santander_current_nn" value="{{ santander.current_nosso_numero }}">
+                        <label class="form-label">Próximo Número</label>
+                        <input type="number" class="form-control" name="santander_current_nn" value="{{ santander.current_nosso_numero }}" required>
+                        <small class="form-text text-muted">Atenção: alterar pode causar duplicações</small>
                     </div>
+                </div>
+            </div>
+        </div>
 
-                    <!-- BMP Config Hidden Fields to preserve data on submit -->
-                    <input type="hidden" name="bmp_agency" value="{{ bmp.agency }}">
-                    <input type="hidden" name="bmp_account" value="{{ bmp.account }}">
-                    <input type="hidden" name="bmp_wallet" value="{{ bmp.wallet }}">
-                    <input type="hidden" name="bmp_convenio" value="{{ bmp.convenio }}">
-                    <input type="hidden" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}">
-                    <input type="hidden" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}">
-                    <input type="hidden" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}">
-                    
-                    <button type="submit" class="btn btn-primary mt-3 w-100">Save Changes</button>
-                </form>
+        <!-- BMP Config -->
+        <div class="col-md-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-bank"></i> BMP Money Plus (Escrow)</span>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="bmp_active" name="bmp_active" 
+                               {% if bmp.is_active %}checked{% endif %}
+                               onchange="updateBankStatus('bmp', this.checked)">
+                        <label class="form-check-label" for="bmp_active">
+                            <span id="bmp_status_badge" class="badge bg-{% if bmp.is_active %}success{% else %}secondary{% endif %}">
+                                {% if bmp.is_active %}Ativo{% else %}Inativo{% endif %}
+                            </span>
+                        </label>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Agência</label>
+                        <input type="text" class="form-control" name="bmp_agency" value="{{ bmp.agency }}" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Conta</label>
+                        <input type="text" class="form-control" name="bmp_account" value="{{ bmp.account }}" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Carteira</label>
+                        <input type="text" class="form-control" name="bmp_wallet" value="{{ bmp.wallet }}" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Convênio</label>
+                        <input type="text" class="form-control" name="bmp_convenio" value="{{ bmp.convenio }}" required>
+                    </div>
+                    <hr>
+                    <h6><i class="bi bi-hash"></i> Faixa de Nosso Número</h6>
+                    <div class="row">
+                        <div class="col-6">
+                            <label class="form-label">Mínimo</label>
+                            <input type="number" class="form-control" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}" required>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">Máximo</label>
+                            <input type="number" class="form-control" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}" required>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <label class="form-label">Próximo Número</label>
+                        <input type="number" class="form-control" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}" required>
+                        <small class="form-text text-muted">Atenção: alterar pode causar duplicações</small>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- BMP Config -->
-    <div class="col-md-6">
-        <div class="card mb-3">
-            <div class="card-header bg-primary text-white">BMP MoneyPlus (Escrow)</div>
-            <div class="card-body">
-                <form method="POST">
-                     <!-- Santander Config Hidden Fields -->
-                    <input type="hidden" name="santander_agency" value="{{ santander.agency }}">
-                    <input type="hidden" name="santander_account" value="{{ santander.account }}">
-                    <input type="hidden" name="santander_wallet" value="{{ santander.wallet }}">
-                    <input type="hidden" name="santander_convenio" value="{{ santander.convenio }}">
-                    <input type="hidden" name="santander_min_nn" value="{{ santander.min_nosso_numero }}">
-                    <input type="hidden" name="santander_max_nn" value="{{ santander.max_nosso_numero }}">
-                    <input type="hidden" name="santander_current_nn" value="{{ santander.current_nosso_numero }}">
-
-                    <div class="mb-2">
-                        <label class="form-label">Agency</label>
-                        <input type="text" class="form-control" name="bmp_agency" value="{{ bmp.agency }}">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Account</label>
-                        <input type="text" class="form-control" name="bmp_account" value="{{ bmp.account }}">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Wallet (Carteira)</label>
-                        <input type="text" class="form-control" name="bmp_wallet" value="{{ bmp.wallet }}">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Convenio</label>
-                        <input type="text" class="form-control" name="bmp_convenio" value="{{ bmp.convenio }}">
-                    </div>
-                    <hr>
-                    <h6>Nosso Numero Range</h6>
-                    <div class="row">
-                        <div class="col">
-                            <label class="form-label">Min</label>
-                            <input type="number" class="form-control" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}">
-                        </div>
-                        <div class="col">
-                            <label class="form-label">Max</label>
-                            <input type="number" class="form-control" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}">
-                        </div>
-                    </div>
-                    <div class="mt-2">
-                        <label class="form-label">Current Next</label>
-                        <input type="number" class="form-control" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}">
-                    </div>
-                    
-                    <button type="submit" class="btn btn-primary mt-3 w-100">Save Changes</button>
-                </form>
+    <div class="row">
+        <div class="col-12">
+            <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()">
+                    <i class="bi bi-arrow-clockwise"></i> Resetar
+                </button>
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-save"></i> Salvar Configurações
+                </button>
             </div>
         </div>
     </div>
+</form>
+
+<div class="alert alert-info mt-4">
+    <i class="bi bi-info-circle"></i> <strong>Importante:</strong> 
+    <ul class="mb-0 mt-2">
+        <li>Pelo menos um banco deve estar ativo para gerar boletos</li>
+        <li>Bancos inativos não aparecerão como opção na geração de boletos</li>
+        <li>Alterar o "Próximo Número" pode causar duplicação de Nosso Número</li>
+        <li>As alterações entram em vigor imediatamente</li>
+    </ul>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function updateBankStatus(bank, isActive) {
+        const badge = document.getElementById(bank + '_status_badge');
+        if (isActive) {
+            badge.className = 'badge bg-success';
+            badge.textContent = 'Ativo';
+        } else {
+            badge.className = 'badge bg-secondary';
+            badge.textContent = 'Inativo';
+        }
+    }
+
+    // Validate at least one bank is active before submit
+    document.getElementById('settingsForm').addEventListener('submit', function(e) {
+        const santanderActive = document.getElementById('santander_active').checked;
+        const bmpActive = document.getElementById('bmp_active').checked;
+        
+        if (!santanderActive && !bmpActive) {
+            e.preventDefault();
+            alert('Erro: Pelo menos um banco deve estar ativo!');
+            return false;
+        }
+        
+        if (!confirmAction('Deseja salvar as alterações nas configurações bancárias?')) {
+            e.preventDefault();
+            return false;
+        }
+        
+        showLoading();
+    });
+</script>
 {% endblock %}

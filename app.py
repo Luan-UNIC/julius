@@ -1,13 +1,29 @@
-from flask import Flask, render_template, redirect, url_for, request, flash, send_from_directory
+"""
+FIDC Middleware - Flask Application
+====================================
+
+Main application file with routes, authentication, and business logic coordination.
+
+Author: FIDC Development Team
+Version: 2.0.0
+"""
+
+from flask import Flask, render_template, redirect, url_for, request, flash, send_from_directory, jsonify, make_response
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, Invoice, Boleto, BankConfig
+from models import db, User, Invoice, Boleto, BankConfig, TransactionHistory
 from services import XmlParser, BoletoBuilder, CnabService
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 from flask import send_file
+from typing import Optional, Tuple, List
+from functools import wraps
 import io
 import os
+import json
+import csv
+import traceback
+import logging
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key_here'
@@ -18,9 +34,114 @@ db.init_app(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+# --- Helper Functions ---
+
+def log_transaction(entity_type: str, entity_id: int, action: str, details: dict = None):
+    """
+    Log a transaction to the audit trail.
+    
+    Args:
+        entity_type: Type of entity ('boleto' or 'invoice')
+        entity_id: ID of the entity
+        action: Action performed ('created', 'updated', 'deleted', 'approved', 'cancelled', 'registered')
+        details: Optional dictionary with additional details
+    """
+    try:
+        history = TransactionHistory(
+            user_id=current_user.id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+            details=json.dumps(details) if details else None,
+            ip_address=request.remote_addr
+        )
+        db.session.add(history)
+        db.session.flush()  # Flush but don't commit (caller will commit)
+        logger.info(f"Transaction logged: {action} on {entity_type}#{entity_id} by user#{current_user.id}")
+    except Exception as e:
+        logger.error(f"Failed to log transaction: {str(e)}")
+
+def get_active_invoices():
+    """Get all non-deleted invoices for current user."""
+    return Invoice.query.filter_by(
+        user_id=current_user.id, 
+        deleted_at=None
+    ).order_by(Invoice.created_at.desc())
+
+def get_active_boletos(user_id=None):
+    """Get all non-deleted boletos, optionally filtered by user."""
+    query = Boleto.query.filter_by(deleted_at=None)
+    if user_id:
+        query = query.filter_by(user_id=user_id)
+    return query.order_by(Boleto.created_at.desc())
+
+def get_active_bank_configs(user_id=None):
+    """Get all active bank configs for a user."""
+    if user_id is None:
+        user_id = current_user.id
+    return BankConfig.query.filter_by(user_id=user_id, is_active=True).all()
+
+def validate_bank_selection(bank_type: str, user_id: int = None) -> Tuple[bool, str]:
+    """
+    Validate if a bank is active for the user.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if user_id is None:
+        user_id = current_user.id
+    
+    config = BankConfig.query.filter_by(user_id=user_id, bank_type=bank_type).first()
+    if not config:
+        return False, f"Bank configuration for {bank_type} not found"
+    
+    if not config.is_active:
+        return False, f"{bank_type.upper()} is currently disabled. Please enable it in settings."
+    
+    return True, ""
+
+def get_bank_name(bank_code: str) -> str:
+    """Get bank name from code."""
+    bank_names = {
+        '033': 'Santander',
+        '274': 'BMP Money Plus'
+    }
+    return bank_names.get(bank_code, f'Bank {bank_code}')
+
+def get_bank_type_from_code(bank_code: str) -> str:
+    """Get bank type from code."""
+    bank_map = {
+        '033': 'santander',
+        '274': 'bmp'
+    }
+    return bank_map.get(bank_code, 'unknown')
+
+def format_currency(value: float) -> str:
+    """Format currency as Brazilian Real."""
+    return f"R$ {value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+def require_role(role: str):
+    """Decorator to require specific user role."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not current_user.is_authenticated:
+                return redirect(url_for('login'))
+            if current_user.role != role:
+                flash('Você não tem permissão para acessar esta página.', 'error')
+                return redirect(url_for('index'))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 # --- Routes ---
 
@@ -53,47 +174,117 @@ def logout():
 
 @app.route('/cedente/dashboard')
 @login_required
+@require_role('cedente')
 def cedente_dashboard():
-    if current_user.role != 'cedente':
-        return redirect(url_for('index'))
-    invoices = Invoice.query.filter_by(user_id=current_user.id).order_by(Invoice.created_at.desc()).all()
     # Check if user has bank configs
     if not current_user.bank_configs:
-         flash("Please configure your bank settings first.")
+         flash("Por favor, configure suas informações bancárias primeiro.", "warning")
          return redirect(url_for('cedente_settings'))
-    return render_template('cedente_dashboard.html', invoices=invoices)
+    
+    # Get filter parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '').strip()
+    status_filter = request.args.get('status', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    
+    # Build query with soft delete filter
+    query = get_active_invoices()
+    
+    # Apply search filter
+    if search:
+        query = query.filter(
+            db.or_(
+                Invoice.sacado_name.ilike(f'%{search}%'),
+                Invoice.sacado_doc.ilike(f'%{search}%'),
+                Invoice.doc_number.ilike(f'%{search}%')
+            )
+        )
+    
+    # Apply status filter
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    
+    # Apply date filters
+    if date_from:
+        try:
+            date_from_obj = datetime.strptime(date_from, '%Y-%m-%d').date()
+            query = query.filter(Invoice.issue_date >= date_from_obj)
+        except:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.strptime(date_to, '%Y-%m-%d').date()
+            query = query.filter(Invoice.issue_date <= date_to_obj)
+        except:
+            pass
+    
+    # Paginate results
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    invoices = pagination.items
+    
+    # Get active boletos for display
+    boletos = get_active_boletos(current_user.id).all()
+    
+    # Get active bank configs
+    active_banks = get_active_bank_configs()
+    
+    return render_template('cedente_dashboard.html', 
+                         invoices=invoices,
+                         boletos=boletos,
+                         pagination=pagination,
+                         active_banks=active_banks,
+                         search=search,
+                         status_filter=status_filter,
+                         date_from=date_from,
+                         date_to=date_to)
 
 @app.route('/cedente/settings', methods=['GET', 'POST'])
 @login_required
+@require_role('cedente')
 def cedente_settings():
-    if current_user.role != 'cedente':
-        return redirect(url_for('index'))
-    
     santander_config = BankConfig.query.filter_by(user_id=current_user.id, bank_type='santander').first()
     bmp_config = BankConfig.query.filter_by(user_id=current_user.id, bank_type='bmp').first()
     
     if request.method == 'POST':
-        # Santander
-        santander_config.agency = request.form.get('santander_agency')
-        santander_config.account = request.form.get('santander_account')
-        santander_config.wallet = request.form.get('santander_wallet')
-        santander_config.convenio = request.form.get('santander_convenio')
-        santander_config.min_nosso_numero = int(request.form.get('santander_min_nn'))
-        santander_config.max_nosso_numero = int(request.form.get('santander_max_nn'))
-        santander_config.current_nosso_numero = int(request.form.get('santander_current_nn'))
-        
-        # BMP
-        bmp_config.agency = request.form.get('bmp_agency')
-        bmp_config.account = request.form.get('bmp_account')
-        bmp_config.wallet = request.form.get('bmp_wallet')
-        bmp_config.convenio = request.form.get('bmp_convenio')
-        bmp_config.min_nosso_numero = int(request.form.get('bmp_min_nn'))
-        bmp_config.max_nosso_numero = int(request.form.get('bmp_max_nn'))
-        bmp_config.current_nosso_numero = int(request.form.get('bmp_current_nn'))
-        
-        db.session.commit()
-        flash("Settings updated successfully.")
-        return redirect(url_for('cedente_settings'))
+        try:
+            # Santander
+            santander_config.agency = request.form.get('santander_agency')
+            santander_config.account = request.form.get('santander_account')
+            santander_config.wallet = request.form.get('santander_wallet')
+            santander_config.convenio = request.form.get('santander_convenio')
+            santander_config.min_nosso_numero = int(request.form.get('santander_min_nn'))
+            santander_config.max_nosso_numero = int(request.form.get('santander_max_nn'))
+            santander_config.current_nosso_numero = int(request.form.get('santander_current_nn'))
+            santander_config.is_active = request.form.get('santander_active') == 'on'
+            
+            # BMP
+            bmp_config.agency = request.form.get('bmp_agency')
+            bmp_config.account = request.form.get('bmp_account')
+            bmp_config.wallet = request.form.get('bmp_wallet')
+            bmp_config.convenio = request.form.get('bmp_convenio')
+            bmp_config.min_nosso_numero = int(request.form.get('bmp_min_nn'))
+            bmp_config.max_nosso_numero = int(request.form.get('bmp_max_nn'))
+            bmp_config.current_nosso_numero = int(request.form.get('bmp_current_nn'))
+            bmp_config.is_active = request.form.get('bmp_active') == 'on'
+            
+            # Validate at least one bank is active
+            if not santander_config.is_active and not bmp_config.is_active:
+                flash("Pelo menos um banco deve estar ativo.", "error")
+                return redirect(url_for('cedente_settings'))
+            
+            db.session.commit()
+            flash("Configurações atualizadas com sucesso!", "success")
+            logger.info(f"User {current_user.id} updated bank settings")
+            return redirect(url_for('cedente_settings'))
+        except ValueError as e:
+            flash(f"Erro de validação: {str(e)}", "error")
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Erro ao atualizar configurações: {str(e)}", "error")
+            logger.error(f"Error updating settings for user {current_user.id}: {str(e)}")
 
     return render_template('cedente_settings.html', santander=santander_config, bmp=bmp_config)
 
@@ -182,98 +373,175 @@ def manual_entry():
 
 @app.route('/cedente/generate_boleto', methods=['POST'])
 @login_required
+@require_role('cedente')
 def generate_boleto():
+    """
+    Generate boletos from selected invoices.
+    Implements atomic nosso_numero increment with database locking.
+    Calculates proper barcode and digitable line according to Febraban standards.
+    """
     invoice_ids = request.form.getlist('invoice_ids')
-    target_bank = request.form.get('target_bank') # 'santander' or 'bmp'
+    target_bank = request.form.get('target_bank')  # 'santander' or 'bmp'
     
     if not invoice_ids:
-        flash('No invoices selected')
+        flash('Nenhuma fatura selecionada', 'warning')
         return redirect(url_for('cedente_dashboard'))
     
-    # Get Config
-    bank_config = BankConfig.query.filter_by(user_id=current_user.id, bank_type=target_bank).first()
-    if not bank_config:
-        flash(f"Configuration for {target_bank} not found.")
+    if not target_bank or target_bank not in ['santander', 'bmp']:
+        flash('Seleção de banco inválida', 'error')
         return redirect(url_for('cedente_dashboard'))
     
-    invoices = Invoice.query.filter(Invoice.id.in_(invoice_ids)).all()
+    # Validate bank is active
+    is_valid, error_msg = validate_bank_selection(target_bank)
+    if not is_valid:
+        flash(error_msg, 'error')
+        return redirect(url_for('cedente_dashboard'))
     
-    # Group by Sacado Doc
-    grouped = {}
-    for inv in invoices:
-        if inv.sacado_doc not in grouped:
-            grouped[inv.sacado_doc] = []
-        grouped[inv.sacado_doc].append(inv)
+    try:
+        # Get Config
+        bank_config = BankConfig.query.filter_by(
+            user_id=current_user.id, 
+            bank_type=target_bank
+        ).with_for_update().first()  # Lock row for atomic update
         
-    generated_count = 0
+        if not bank_config:
+            flash(f"Configuration for {target_bank.upper()} not found. Please configure in settings.", 'error')
+            return redirect(url_for('cedente_settings'))
+        
+        invoices = Invoice.query.filter(Invoice.id.in_(invoice_ids)).all()
+        
+        if not invoices:
+            flash('No valid invoices found', 'error')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Group by Sacado Doc
+        grouped = {}
+        for inv in invoices:
+            if inv.sacado_doc not in grouped:
+                grouped[inv.sacado_doc] = []
+            grouped[inv.sacado_doc].append(inv)
+        
+        generated_count = 0
+        
+        for doc, inv_list in grouped.items():
+            # Validate Range (atomic check)
+            if bank_config.current_nosso_numero > bank_config.max_nosso_numero:
+                flash(f"Nosso Numero limit reached for {target_bank.upper()}. Increase max limit in settings.", 'error')
+                break
+            
+            # Atomic increment of nosso_numero
+            nosso_numero = bank_config.current_nosso_numero
+            bank_config.current_nosso_numero += 1
+            
+            # Sum amount
+            total_amount = sum(i.amount for i in inv_list)
+            sacado_name = inv_list[0].sacado_name
+            
+            # Calculate Due Date (5 days from now as default)
+            due_date = datetime.now().date() + timedelta(days=5)
+            
+            # Bank-specific configuration
+            if bank_config.bank_type == 'santander':
+                bank_code = '033'
+                bank_name = 'Banco Santander'
+                carteira = bank_config.wallet or '101'
+                formatted_nn = BoletoBuilder.calculate_santander_nosso_numero(nosso_numero, carteira)
+            else:  # BMP
+                bank_code = '274'
+                bank_name = 'BMP Money Plus'
+                carteira = bank_config.wallet or '109'
+                # BMP uses nosso_numero + DV calculated separately
+                from utils import calcular_dv_bmp
+                dv = calcular_dv_bmp(carteira, nosso_numero)
+                formatted_nn = f"{str(nosso_numero).zfill(11)}-{dv}"
+            
+            # Calculate proper barcode and digitable line
+            account_clean = bank_config.account.split('-')[0] if '-' in bank_config.account else bank_config.account
+            
+            barcode, digitable_line = BoletoBuilder.calculate_barcode(
+                bank_code=bank_code,
+                currency_code='9',
+                due_date=due_date,
+                amount=total_amount,
+                nosso_numero=str(nosso_numero).zfill(12),
+                agency=bank_config.agency,
+                account=account_clean,
+                carteira=carteira
+            )
+            
+            # Create Boleto record
+            boleto = Boleto(
+                user_id=current_user.id,
+                sacado_name=sacado_name,
+                sacado_doc=doc,
+                amount=total_amount,
+                due_date=due_date,
+                nosso_numero=str(nosso_numero),
+                bank=bank_code,
+                digitable_line=digitable_line,
+                barcode=barcode,
+                status='pending'  # Changed from 'printed' to 'pending'
+            )
+            db.session.add(boleto)
+            db.session.flush()  # Get boleto ID without committing
+            
+            # Log transaction
+            log_transaction('boleto', boleto.id, 'created', {
+                'bank': bank_name,
+                'amount': total_amount,
+                'nosso_numero': str(nosso_numero),
+                'sacado': sacado_name
+            })
+            
+            # Link invoices
+            for inv in inv_list:
+                inv.boleto_id = boleto.id
+                inv.status = 'boleto_generated'
+                log_transaction('invoice', inv.id, 'updated', {
+                    'status': 'boleto_generated',
+                    'boleto_id': boleto.id
+                })
+            
+            # Generate PDF
+            pdf_filename = f"boleto_{boleto.id}.pdf"
+            pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
+            
+            if not os.path.exists(app.config['UPLOAD_FOLDER']):
+                os.makedirs(app.config['UPLOAD_FOLDER'])
+            
+            BoletoBuilder.generate_pdf({
+                'bank_name': bank_name,
+                'bank_code': bank_code,
+                'digitable_line': digitable_line,
+                'cedente_name': current_user.username,
+                'cedente_doc': '00.000.000/0000-00',  # TODO: Add to user model
+                'cedente_address': 'Endereço não cadastrado',
+                'agency_account': f"{bank_config.agency}/{account_clean}",
+                'carteira': carteira,
+                'due_date': due_date,
+                'amount': total_amount,
+                'sacado_name': sacado_name,
+                'sacado_doc': doc,
+                'sacado_address': 'Endereço não cadastrado',
+                'barcode': barcode,
+                'nosso_numero': formatted_nn,
+                'doc_number': f"INV-{boleto.id}",
+                'instructions': 'Não receber após o vencimento. Sujeito a multa e juros de mora.'
+            }, pdf_path)
+            
+            generated_count += 1
+        
+        # Commit all changes atomically
+        db.session.commit()
+        flash(f'{generated_count} Boleto(s) generated successfully using {target_bank.upper()}!', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error generating boletos: {str(e)}', 'error')
+        print(f"Error in generate_boleto: {e}")
+        import traceback
+        traceback.print_exc()
     
-    for doc, inv_list in grouped.items():
-        # Validate Range
-        if bank_config.current_nosso_numero > bank_config.max_nosso_numero:
-             flash(f"Nosso Numero limit reached for {target_bank}. Increase max limit in settings.")
-             break
-             
-        # Sum amount
-        total_amount = sum(i.amount for i in inv_list)
-        sacado_name = inv_list[0].sacado_name
-        
-        # Calculate Due Date (Standard 30 days or from input? Let's say +30 days from today)
-        due_date = datetime.now().date() + timedelta(days=5)
-        
-        # Get Nosso Numero
-        nosso_numero = bank_config.current_nosso_numero
-        bank_config.current_nosso_numero += 1
-        
-        # Calculate Digits
-        # Simplified for demo
-        full_nosso_numero = f"{bank_config.wallet}{str(nosso_numero).zfill(11)}"
-        if bank_config.bank_type == 'santander':
-            bank_code_num = '033'
-            formatted_nn = BoletoBuilder.calculate_santander_nosso_numero(nosso_numero)
-        else:
-            bank_code_num = 'BMP' # Mock BMP code? usually numeric like 274? BMP Money Plus is 341? No, BMP is 274 or similar. Let's stick to 'BMP' str for now unless strictly numeric needed.
-            formatted_nn = str(nosso_numero)
-            
-        boleto = Boleto(
-            user_id=current_user.id,
-            sacado_name=sacado_name,
-            sacado_doc=doc,
-            amount=total_amount,
-            due_date=due_date,
-            nosso_numero=str(nosso_numero),
-            bank=bank_code_num,
-            digitable_line=f"{bank_code_num}99.{bank_config.agency} {bank_config.account} {formatted_nn} {total_amount}", # Mock
-            barcode=f"{bank_code_num}9{total_amount}{formatted_nn}", # Mock
-            status='printed'
-        )
-        db.session.add(boleto)
-        db.session.commit() # Commit to get ID
-        
-        # Link invoices
-        for inv in inv_list:
-            inv.boleto_id = boleto.id
-            inv.status = 'boleto_generated'
-            
-        # Generate PDF
-        pdf_filename = f"boleto_{boleto.id}.pdf"
-        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
-        
-        BoletoBuilder.generate_pdf({
-            'bank_name': 'Banco Santander' if bank_config.bank_type == 'santander' else 'BMP MoneyPlus',
-            'bank_code': bank_code_num,
-            'digitable_line': boleto.digitable_line,
-            'cedente_name': current_user.username,
-            'due_date': boleto.due_date,
-            'amount': boleto.amount,
-            'sacado_name': boleto.sacado_name,
-            'sacado_doc': boleto.sacado_doc,
-            'barcode': boleto.barcode
-        }, pdf_path)
-        
-        generated_count += 1
-        
-    db.session.commit()
-    flash(f'{generated_count} Boletos generated successfully using {target_bank.upper()}!')
     return redirect(url_for('cedente_dashboard'))
 
 @app.route('/download_boleto/<int:boleto_id>')
@@ -298,75 +566,490 @@ def view_lastro(invoice_id):
 
 @app.route('/agente/dashboard')
 @login_required
+@require_role('agente')
 def agente_dashboard():
-    if current_user.role != 'agente':
-        return redirect(url_for('index'))
-    boletos = Boleto.query.order_by(Boleto.created_at.desc()).all()
-    return render_template('agente_dashboard.html', boletos=boletos)
+    # Get filter parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '').strip()
+    status_filter = request.args.get('status', '').strip()
+    bank_filter = request.args.get('bank', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    
+    # Build query with soft delete filter
+    query = get_active_boletos()
+    
+    # Apply search filter
+    if search:
+        query = query.filter(
+            db.or_(
+                Boleto.sacado_name.ilike(f'%{search}%'),
+                Boleto.sacado_doc.ilike(f'%{search}%'),
+                Boleto.nosso_numero.ilike(f'%{search}%')
+            )
+        )
+    
+    # Apply status filter
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    
+    # Apply bank filter
+    if bank_filter:
+        query = query.filter_by(bank=bank_filter)
+    
+    # Apply date filters
+    if date_from:
+        try:
+            date_from_obj = datetime.strptime(date_from, '%Y-%m-%d').date()
+            query = query.filter(Boleto.due_date >= date_from_obj)
+        except:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.strptime(date_to, '%Y-%m-%d').date()
+            query = query.filter(Boleto.due_date <= date_to_obj)
+        except:
+            pass
+    
+    # Paginate results
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    boletos = pagination.items
+    
+    # Group boletos by bank for statistics
+    boletos_by_bank = {}
+    for boleto in get_active_boletos().all():
+        bank_code = boleto.bank
+        bank_name = get_bank_name(bank_code)
+        if bank_name not in boletos_by_bank:
+            boletos_by_bank[bank_name] = {
+                'code': bank_code,
+                'count': 0,
+                'total_value': 0,
+                'pending': 0,
+                'approved': 0,
+                'registered': 0
+            }
+        boletos_by_bank[bank_name]['count'] += 1
+        boletos_by_bank[bank_name]['total_value'] += boleto.amount
+        boletos_by_bank[bank_name][boleto.status] = boletos_by_bank[bank_name].get(boleto.status, 0) + 1
+    
+    return render_template('agente_dashboard.html', 
+                         boletos=boletos,
+                         pagination=pagination,
+                         boletos_by_bank=boletos_by_bank,
+                         search=search,
+                         status_filter=status_filter,
+                         bank_filter=bank_filter,
+                         date_from=date_from,
+                         date_to=date_to,
+                         get_bank_name=get_bank_name)
 
 @app.route('/agente/approve', methods=['POST'])
 @login_required
+@require_role('agente')
 def approve_boletos():
-    if current_user.role != 'agente':
-        return redirect(url_for('index'))
-        
     boleto_ids = request.form.getlist('boleto_ids')
-    if boleto_ids:
-        boletos = Boleto.query.filter(Boleto.id.in_(boleto_ids)).all()
+    if not boleto_ids:
+        flash('Nenhum boleto selecionado.', 'warning')
+        return redirect(url_for('agente_dashboard'))
+    
+    try:
+        boletos = get_active_boletos().filter(Boleto.id.in_(boleto_ids)).all()
+        approved_count = 0
         for b in boletos:
-            if b.status == 'printed':
-                b.status = 'selected'
+            if b.status == 'pending':
+                old_status = b.status
+                b.status = 'approved'
+                log_transaction('boleto', b.id, 'approved', {
+                    'old_status': old_status,
+                    'new_status': 'approved',
+                    'nosso_numero': b.nosso_numero
+                })
+                approved_count += 1
+        
         db.session.commit()
-        flash(f'{len(boletos)} Boletos approved/selected for Remessa.')
+        flash(f'{approved_count} boleto(s) aprovado(s) para remessa.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao aprovar boletos: {str(e)}', 'error')
+        logger.error(f"Error approving boletos: {str(e)}")
     
     return redirect(url_for('agente_dashboard'))
 
 @app.route('/agente/generate_remessa')
 @login_required
+@require_role('agente')
 def generate_remessa():
-    if current_user.role != 'agente':
-        return redirect(url_for('index'))
-    
-    # Get all selected boletos
-    boletos = Boleto.query.filter_by(status='selected').all()
+    """
+    Generate CNAB remittance file for all approved boletos (all banks mixed).
+    DEPRECATED: Use /agente/generate_remessa/<bank_code> instead for bank-specific files.
+    """
+    # Get all approved boletos
+    boletos = get_active_boletos().filter_by(status='approved').all()
     if not boletos:
-        flash('No boletos selected for remessa.')
+        flash('Nenhum boleto aprovado para remessa.', 'warning')
         return redirect(url_for('agente_dashboard'))
     
-    # For MVP, we assume all boletos belong to the same bank or we separate them.
-    # We will grab the bank from the first boleto to decide (Santander vs BMP).
-    # In a real system, we'd group by bank/cedente.
-    # We will use the Cedente's bank config for generation.
+    # Redirect to bank-specific generation if only one bank
+    banks = set(b.bank for b in boletos)
+    if len(banks) == 1:
+        return redirect(url_for('generate_remessa_by_bank', bank_code=list(banks)[0]))
     
-    first_boleto = boletos[0]
-    cedente = User.query.get(first_boleto.user_id)
+    # If multiple banks, show error and ask to generate separately
+    flash(f'Existem boletos de {len(banks)} bancos diferentes. Por favor, gere arquivos separados por banco.', 'warning')
+    return redirect(url_for('agente_dashboard'))
+
+@app.route('/agente/generate_remessa/<bank_code>')
+@login_required
+@require_role('agente')
+def generate_remessa_by_bank(bank_code):
+    """
+    Generate CNAB remittance file for approved boletos of a specific bank.
+    This is the recommended way to generate remittance files.
+    """
+    # Get all approved boletos for this bank
+    boletos = get_active_boletos().filter_by(status='approved', bank=bank_code).all()
+    if not boletos:
+        flash(f'Nenhum boleto aprovado para {get_bank_name(bank_code)}.', 'warning')
+        return redirect(url_for('agente_dashboard'))
     
-    # Determine bank type based on the Boleto's bank code
-    # This assumes the Boleto.bank field stores the code used during generation ('033' or 'BMP')
-    
-    if first_boleto.bank == '033': # Santander
-        content = CnabService.generate_santander_240(boletos, cedente)
-        filename = f"REMESSA_SANTANDER_{datetime.now().strftime('%Y%m%d%H%M')}.REM"
-    else: # BMP (Defaulting to 400 for anything else)
-        content = CnabService.generate_bmp_400(boletos, cedente)
-        filename = f"REMESSA_BMP_{datetime.now().strftime('%Y%m%d%H%M')}.REM"
+    try:
+        # Group boletos by cedente (all same bank already)
+        grouped = {}
+        for boleto in boletos:
+            cedente_id = boleto.user_id
+            if cedente_id not in grouped:
+                grouped[cedente_id] = []
+            grouped[cedente_id].append(boleto)
         
-    # Update status
-    for b in boletos:
-        b.status = 'registered'
-    db.session.commit()
+        # If multiple cedentes, generate one file per cedente
+        # For now, generate file for first cedente (can be extended to generate multiple files)
+        if len(grouped) > 1:
+            flash(f'Atenção: {len(grouped)} cedentes diferentes detectados. Gerando arquivo para o primeiro cedente apenas.', 'warning')
+        
+        # Get first group
+        cedente_id, boleto_group = list(grouped.items())[0]
+        
+        # Get cedente (beneficiary who owns these boletos)
+        cedente = User.query.get(cedente_id)
+        if not cedente:
+            flash('Cedente não encontrado para os boletos selecionados', 'error')
+            return redirect(url_for('agente_dashboard'))
+        
+        # Determine bank type and generate appropriate file
+        bank_name = get_bank_name(bank_code)
+        if bank_code == '033':  # Santander
+            content = CnabService.generate_santander_240(boleto_group, cedente)
+            cnab_type = "CNAB 240"
+        elif bank_code == '274':  # BMP
+            content = CnabService.generate_bmp_400(boleto_group, cedente)
+            cnab_type = "CNAB 400"
+        else:
+            flash(f'Código de banco desconhecido: {bank_code}', 'error')
+            return redirect(url_for('agente_dashboard'))
+        
+        # Filename format: CB{DDMM}{SEQ}.REM (Cobrança Bancária + Date + Sequence)
+        seq = str(len(boleto_group)).zfill(4)
+        filename = f"CB{datetime.now().strftime('%d%m')}{seq}.REM"
+        
+        # Update boleto status and log transactions
+        for boleto in boleto_group:
+            old_status = boleto.status
+            boleto.status = 'registered'
+            log_transaction('boleto', boleto.id, 'registered', {
+                'old_status': old_status,
+                'new_status': 'registered',
+                'bank': bank_name,
+                'filename': filename
+            })
+        
+        db.session.commit()
+        
+        flash(f'Arquivo de remessa gerado com sucesso para {len(boleto_group)} boleto(s) - {bank_name} {cnab_type}', 'success')
+        logger.info(f"Remittance file {filename} generated for {len(boleto_group)} boletos by user {current_user.id}")
+        
+        # Send file
+        mem = io.BytesIO()
+        # CNAB files should use Windows line endings (CRLF) and ISO-8859-1 encoding
+        mem.write(content.encode('iso-8859-1', errors='replace'))
+        mem.seek(0)
+        
+        return send_file(
+            mem,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='text/plain'
+        )
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao gerar arquivo de remessa: {str(e)}', 'error')
+        logger.error(f"Error in generate_remessa_by_bank: {str(e)}\n{traceback.format_exc()}")
+        return redirect(url_for('agente_dashboard'))
+
+# --- Delete/Cancel Routes ---
+
+@app.route('/cedente/delete_invoice/<int:invoice_id>', methods=['POST'])
+@login_required
+@require_role('cedente')
+def delete_invoice(invoice_id):
+    """Soft delete an invoice."""
+    try:
+        invoice = Invoice.query.get_or_404(invoice_id)
+        
+        # Check ownership
+        if invoice.user_id != current_user.id:
+            flash('Acesso não autorizado.', 'error')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Check if already deleted
+        if invoice.deleted_at:
+            flash('Fatura já foi excluída.', 'warning')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Check if has boleto
+        if invoice.boleto_id:
+            flash('Não é possível excluir fatura vinculada a um boleto. Cancele o boleto primeiro.', 'error')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Soft delete
+        invoice.deleted_at = datetime.utcnow()
+        invoice.deleted_by = current_user.id
+        
+        log_transaction('invoice', invoice.id, 'deleted', {
+            'doc_number': invoice.doc_number,
+            'sacado': invoice.sacado_name
+        })
+        
+        db.session.commit()
+        flash('Fatura excluída com sucesso.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao excluir fatura: {str(e)}', 'error')
+        logger.error(f"Error deleting invoice {invoice_id}: {str(e)}")
     
-    # Send file
-    mem = io.BytesIO()
-    mem.write(content.encode('utf-8')) # CNAB is typically ASCII/ANSI, but utf-8 is safe for now
-    mem.seek(0)
+    return redirect(url_for('cedente_dashboard'))
+
+@app.route('/cedente/cancel_boleto/<int:boleto_id>', methods=['POST'])
+@login_required
+@require_role('cedente')
+def cancel_boleto(boleto_id):
+    """Cancel a boleto (soft delete)."""
+    try:
+        boleto = Boleto.query.get_or_404(boleto_id)
+        
+        # Check ownership
+        if boleto.user_id != current_user.id:
+            flash('Acesso não autorizado.', 'error')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Check if already deleted
+        if boleto.deleted_at:
+            flash('Boleto já foi cancelado.', 'warning')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Check status - can only cancel pending or approved boletos
+        if boleto.status == 'registered':
+            flash('Não é possível cancelar boleto já registrado no banco.', 'error')
+            return redirect(url_for('cedente_dashboard'))
+        
+        # Soft delete and update status
+        old_status = boleto.status
+        boleto.deleted_at = datetime.utcnow()
+        boleto.deleted_by = current_user.id
+        boleto.status = 'cancelled'
+        
+        # Unlink invoices
+        for invoice in boleto.invoices:
+            invoice.boleto_id = None
+            invoice.status = 'pending'
+        
+        log_transaction('boleto', boleto.id, 'cancelled', {
+            'old_status': old_status,
+            'nosso_numero': boleto.nosso_numero,
+            'amount': boleto.amount
+        })
+        
+        db.session.commit()
+        flash('Boleto cancelado com sucesso.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao cancelar boleto: {str(e)}', 'error')
+        logger.error(f"Error cancelling boleto {boleto_id}: {str(e)}")
     
-    return send_file(
-        mem,
-        as_attachment=True,
-        download_name=filename,
-        mimetype='text/plain'
-    )
+    return redirect(url_for('cedente_dashboard'))
+
+@app.route('/agente/cancel_boleto/<int:boleto_id>', methods=['POST'])
+@login_required
+@require_role('agente')
+def agente_cancel_boleto(boleto_id):
+    """Agent cancels a boleto (soft delete with more permissions)."""
+    try:
+        boleto = Boleto.query.get_or_404(boleto_id)
+        
+        # Check if already deleted
+        if boleto.deleted_at:
+            flash('Boleto já foi cancelado.', 'warning')
+            return redirect(url_for('agente_dashboard'))
+        
+        # Agent can cancel any status except registered
+        if boleto.status == 'registered':
+            flash('Não é possível cancelar boleto já registrado no banco.', 'error')
+            return redirect(url_for('agente_dashboard'))
+        
+        # Soft delete and update status
+        old_status = boleto.status
+        boleto.deleted_at = datetime.utcnow()
+        boleto.deleted_by = current_user.id
+        boleto.status = 'cancelled'
+        
+        # Unlink invoices
+        for invoice in boleto.invoices:
+            invoice.boleto_id = None
+            invoice.status = 'pending'
+        
+        log_transaction('boleto', boleto.id, 'cancelled', {
+            'old_status': old_status,
+            'nosso_numero': boleto.nosso_numero,
+            'amount': boleto.amount,
+            'cancelled_by_agent': True
+        })
+        
+        db.session.commit()
+        flash('Boleto cancelado com sucesso.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao cancelar boleto: {str(e)}', 'error')
+        logger.error(f"Error cancelling boleto {boleto_id}: {str(e)}")
+    
+    return redirect(url_for('agente_dashboard'))
+
+# --- Transaction History Routes ---
+
+@app.route('/history')
+@login_required
+def transaction_history():
+    """View transaction history."""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    entity_filter = request.args.get('entity', '').strip()
+    action_filter = request.args.get('action', '').strip()
+    
+    # Build query
+    if current_user.role == 'cedente':
+        # Cedentes see only their own transactions
+        query = TransactionHistory.query.filter_by(user_id=current_user.id)
+    else:
+        # Agentes see all transactions
+        query = TransactionHistory.query
+    
+    # Apply filters
+    if entity_filter:
+        query = query.filter_by(entity_type=entity_filter)
+    
+    if action_filter:
+        query = query.filter_by(action=action_filter)
+    
+    # Order by newest first
+    query = query.order_by(TransactionHistory.timestamp.desc())
+    
+    # Paginate
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    history = pagination.items
+    
+    return render_template('transaction_history.html',
+                         history=history,
+                         pagination=pagination,
+                         entity_filter=entity_filter,
+                         action_filter=action_filter)
+
+@app.route('/export/invoices')
+@login_required
+@require_role('cedente')
+def export_invoices_csv():
+    """Export invoices to CSV."""
+    try:
+        invoices = get_active_invoices().all()
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['ID', 'Tipo', 'Sacado', 'CPF/CNPJ', 'Valor', 'Data Emissão', 'Nº Documento', 'Status', 'Criado em'])
+        
+        # Write data
+        for inv in invoices:
+            writer.writerow([
+                inv.id,
+                inv.upload_type,
+                inv.sacado_name,
+                inv.sacado_doc,
+                inv.amount,
+                inv.issue_date.strftime('%d/%m/%Y'),
+                inv.doc_number,
+                inv.status,
+                inv.created_at.strftime('%d/%m/%Y %H:%M')
+            ])
+        
+        # Create response
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+        response.headers['Content-Disposition'] = f'attachment; filename=faturas_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        
+        logger.info(f"User {current_user.id} exported {len(invoices)} invoices to CSV")
+        return response
+    except Exception as e:
+        flash(f'Erro ao exportar: {str(e)}', 'error')
+        logger.error(f"Error exporting invoices: {str(e)}")
+        return redirect(url_for('cedente_dashboard'))
+
+@app.route('/export/boletos')
+@login_required
+def export_boletos_csv():
+    """Export boletos to CSV."""
+    try:
+        if current_user.role == 'cedente':
+            boletos = get_active_boletos(current_user.id).all()
+        else:
+            boletos = get_active_boletos().all()
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['ID', 'Nosso Número', 'Banco', 'Sacado', 'CPF/CNPJ', 'Valor', 'Vencimento', 'Status', 'Criado em'])
+        
+        # Write data
+        for boleto in boletos:
+            writer.writerow([
+                boleto.id,
+                boleto.nosso_numero,
+                get_bank_name(boleto.bank),
+                boleto.sacado_name,
+                boleto.sacado_doc,
+                boleto.amount,
+                boleto.due_date.strftime('%d/%m/%Y'),
+                boleto.status,
+                boleto.created_at.strftime('%d/%m/%Y %H:%M')
+            ])
+        
+        # Create response
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+        response.headers['Content-Disposition'] = f'attachment; filename=boletos_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        
+        logger.info(f"User {current_user.id} exported {len(boletos)} boletos to CSV")
+        return response
+    except Exception as e:
+        flash(f'Erro ao exportar: {str(e)}', 'error')
+        logger.error(f"Error exporting boletos: {str(e)}")
+        return redirect(url_for('cedente_dashboard' if current_user.role == 'cedente' else 'agente_dashboard'))
 
 # --- CLI to create DB ---
 def init_db():

@@ -4,3 +4,5 @@ Flask-Login
 lxml
 werkzeug
 reportlab
+python-barcode
+Pillow
