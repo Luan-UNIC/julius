@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+instance/fidc.db
+instance/fidc.db-journal
+uploads/*
+!uploads/.gitkeep
+*.pdf
+*.db
+.env
+venv/
+.git/
