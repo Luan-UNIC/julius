@@ -1,0 +1,116 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Settings</h2>
+<p class="text-muted">Configure your bank accounts for Boleto generation.</p>
+
+<div class="row">
+    <!-- Santander Config -->
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header bg-danger text-white">Santander (FIDC)</div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-2">
+                        <label class="form-label">Agency</label>
+                        <input type="text" class="form-control" name="santander_agency" value="{{ santander.agency }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Account</label>
+                        <input type="text" class="form-control" name="santander_account" value="{{ santander.account }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Wallet (Carteira)</label>
+                        <input type="text" class="form-control" name="santander_wallet" value="{{ santander.wallet }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Convenio</label>
+                        <input type="text" class="form-control" name="santander_convenio" value="{{ santander.convenio }}">
+                    </div>
+                    <hr>
+                    <h6>Nosso Numero Range</h6>
+                    <div class="row">
+                        <div class="col">
+                            <label class="form-label">Min</label>
+                            <input type="number" class="form-control" name="santander_min_nn" value="{{ santander.min_nosso_numero }}">
+                        </div>
+                        <div class="col">
+                            <label class="form-label">Max</label>
+                            <input type="number" class="form-control" name="santander_max_nn" value="{{ santander.max_nosso_numero }}">
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <label class="form-label">Current Next</label>
+                        <input type="number" class="form-control" name="santander_current_nn" value="{{ santander.current_nosso_numero }}">
+                    </div>
+
+                    <!-- BMP Config Hidden Fields to preserve data on submit -->
+                    <input type="hidden" name="bmp_agency" value="{{ bmp.agency }}">
+                    <input type="hidden" name="bmp_account" value="{{ bmp.account }}">
+                    <input type="hidden" name="bmp_wallet" value="{{ bmp.wallet }}">
+                    <input type="hidden" name="bmp_convenio" value="{{ bmp.convenio }}">
+                    <input type="hidden" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}">
+                    <input type="hidden" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}">
+                    <input type="hidden" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}">
+                    
+                    <button type="submit" class="btn btn-primary mt-3 w-100">Save Changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- BMP Config -->
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header bg-primary text-white">BMP MoneyPlus (Escrow)</div>
+            <div class="card-body">
+                <form method="POST">
+                     <!-- Santander Config Hidden Fields -->
+                    <input type="hidden" name="santander_agency" value="{{ santander.agency }}">
+                    <input type="hidden" name="santander_account" value="{{ santander.account }}">
+                    <input type="hidden" name="santander_wallet" value="{{ santander.wallet }}">
+                    <input type="hidden" name="santander_convenio" value="{{ santander.convenio }}">
+                    <input type="hidden" name="santander_min_nn" value="{{ santander.min_nosso_numero }}">
+                    <input type="hidden" name="santander_max_nn" value="{{ santander.max_nosso_numero }}">
+                    <input type="hidden" name="santander_current_nn" value="{{ santander.current_nosso_numero }}">
+
+                    <div class="mb-2">
+                        <label class="form-label">Agency</label>
+                        <input type="text" class="form-control" name="bmp_agency" value="{{ bmp.agency }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Account</label>
+                        <input type="text" class="form-control" name="bmp_account" value="{{ bmp.account }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Wallet (Carteira)</label>
+                        <input type="text" class="form-control" name="bmp_wallet" value="{{ bmp.wallet }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Convenio</label>
+                        <input type="text" class="form-control" name="bmp_convenio" value="{{ bmp.convenio }}">
+                    </div>
+                    <hr>
+                    <h6>Nosso Numero Range</h6>
+                    <div class="row">
+                        <div class="col">
+                            <label class="form-label">Min</label>
+                            <input type="number" class="form-control" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}">
+                        </div>
+                        <div class="col">
+                            <label class="form-label">Max</label>
+                            <input type="number" class="form-control" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}">
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <label class="form-label">Current Next</label>
+                        <input type="number" class="form-control" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary mt-3 w-100">Save Changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
