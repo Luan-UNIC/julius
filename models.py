@@ -12,7 +12,7 @@ Models:
 - TransactionHistory: Audit trail for all operations
 
 Author: FIDC Development Team
-Version: 2.0.0
+Version: 3.0.0
 """
 
 from flask_sqlalchemy import SQLAlchemy
@@ -30,13 +30,27 @@ class User(UserMixin, db.Model):
     Roles:
     - 'cedente': Can upload invoices and generate boletos
     - 'agente': Can approve boletos and generate CNAB remittance files
+    - 'admin': Can configure bank settings and user details
     """
     __tablename__ = 'user'
     
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(100), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(200), nullable=False)
-    role = db.Column(db.String(20), nullable=False)  # 'cedente' or 'agente'
+    role = db.Column(db.String(20), nullable=False)  # 'cedente', 'agente', 'admin'
+
+    # New Cedente Details
+    razao_social = db.Column(db.String(200), nullable=True)
+    cnpj = db.Column(db.String(20), nullable=True)  # Numbers only
+
+    # Cedente Address
+    address_street = db.Column(db.String(200), nullable=True)  # Logradouro
+    address_number = db.Column(db.String(20), nullable=True)
+    address_complement = db.Column(db.String(100), nullable=True)
+    address_neighborhood = db.Column(db.String(100), nullable=True)  # Bairro
+    address_city = db.Column(db.String(100), nullable=True)
+    address_state = db.Column(db.String(2), nullable=True)  # UF
+    address_zip = db.Column(db.String(10), nullable=True)  # CEP
     
     # Relationships
     bank_configs = db.relationship('BankConfig', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -49,17 +63,6 @@ class BankConfig(db.Model):
     """
     Bank configuration for cedente users.
     Stores bank-specific settings and nosso_numero sequence management.
-    
-    Attributes:
-        bank_type: 'santander' or 'bmp'
-        agency: Bank agency code
-        account: Account number (with or without check digit)
-        wallet: Carteira code (e.g., '101' for Santander, '109' for BMP)
-        convenio: Convenio/agreement code
-        current_nosso_numero: Current sequential number for boletos
-        min_nosso_numero: Minimum allowed nosso_numero
-        max_nosso_numero: Maximum allowed nosso_numero
-        is_active: Whether this bank is enabled for the cedente
     """
     __tablename__ = 'bank_config'
     
@@ -71,12 +74,21 @@ class BankConfig(db.Model):
     account = db.Column(db.String(20), nullable=True)
     wallet = db.Column(db.String(5), nullable=True)  # Carteira
     convenio = db.Column(db.String(20), nullable=True)
+    codigo_transmissao = db.Column(db.String(50), nullable=True) # Santander specific
     
     # Nosso Número management (atomic increment required)
     current_nosso_numero = db.Column(db.Integer, default=1, nullable=False)
     min_nosso_numero = db.Column(db.Integer, default=1, nullable=False)
     max_nosso_numero = db.Column(db.Integer, default=999999999, nullable=False)
     
+    # Financial Instructions (Regras de Negocio)
+    juros_percent = db.Column(db.Float, nullable=True) # Juros mensal %
+    multa_percent = db.Column(db.Float, nullable=True) # Multa %
+    desconto_value = db.Column(db.Float, nullable=True) # Valor ou %
+    desconto_days = db.Column(db.Integer, nullable=True) # Dias ate vencimento
+    protesto_dias = db.Column(db.Integer, nullable=True)
+    baixa_dias = db.Column(db.Integer, nullable=True)
+
     # Bank activation status
     is_active = db.Column(db.Boolean, default=True, nullable=False, index=True)
     
@@ -88,19 +100,6 @@ class Invoice(db.Model):
     """
     Invoice/Fiscal document model.
     Represents uploaded NFe, CTe, or manually entered invoices.
-    
-    Attributes:
-        upload_type: 'nfe', 'cte', or 'manual'
-        file_path: Path to uploaded XML/PDF file
-        sacado_name: Payer name
-        sacado_doc: Payer CPF/CNPJ
-        amount: Invoice amount in BRL
-        issue_date: Invoice issue date
-        doc_number: Invoice/document number
-        status: 'pending' or 'boleto_generated'
-        boleto_id: FK to generated Boleto (if any)
-        deleted_at: Soft delete timestamp
-        deleted_by: User who deleted this record
     """
     __tablename__ = 'invoice'
     
@@ -114,10 +113,19 @@ class Invoice(db.Model):
     sacado_name = db.Column(db.String(200), nullable=False)
     sacado_doc = db.Column(db.String(20), nullable=False, index=True)  # CPF/CNPJ
     
+    # Sacado Address Details
+    sacado_address = db.Column(db.String(200), nullable=True) # Logradouro + Numero
+    sacado_neighborhood = db.Column(db.String(100), nullable=True)
+    sacado_city = db.Column(db.String(100), nullable=True)
+    sacado_state = db.Column(db.String(2), nullable=True)
+    sacado_zip = db.Column(db.String(10), nullable=True)
+
     amount = db.Column(db.Float, nullable=False)
     issue_date = db.Column(db.Date, nullable=False)
     doc_number = db.Column(db.String(50), nullable=False)
     
+    especie = db.Column(db.String(10), default='DM', nullable=True) # DM, DS, etc.
+
     status = db.Column(db.String(20), default='pending', nullable=False, index=True)
     boleto_id = db.Column(db.Integer, db.ForeignKey('boleto.id'), nullable=True, index=True)
     
@@ -139,19 +147,6 @@ class Boleto(db.Model):
     """
     Boleto (Brazilian payment slip) model.
     Generated from one or more invoices, grouped by payer.
-    
-    Attributes:
-        sacado_name: Payer name
-        sacado_doc: Payer CPF/CNPJ
-        amount: Total amount in BRL
-        due_date: Payment due date
-        nosso_numero: Sequential number assigned by bank
-        digitable_line: 47-digit digitable line for manual entry
-        barcode: 44-digit barcode (Febraban standard)
-        bank: Bank code ('033' for Santander, '274' for BMP)
-        status: 'pending', 'approved', 'cancelled', 'registered'
-        deleted_at: Soft delete timestamp
-        deleted_by: User who deleted this record
     """
     __tablename__ = 'boleto'
     
@@ -192,15 +187,6 @@ class TransactionHistory(db.Model):
     """
     Transaction history model for audit trail.
     Tracks all operations on boletos and invoices.
-    
-    Attributes:
-        timestamp: When the action occurred
-        user_id: User who performed the action
-        entity_type: Type of entity ('boleto' or 'invoice')
-        entity_id: ID of the affected entity
-        action: Action performed ('created', 'updated', 'deleted', 'approved', 'cancelled', 'registered')
-        details: JSON field with additional details (old values, new values, etc.)
-        ip_address: IP address of the user (optional)
     """
     __tablename__ = 'transaction_history'
     
