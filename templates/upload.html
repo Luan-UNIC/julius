@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Upload Invoice / Manual Entry</h2>
+
+<ul class="nav nav-tabs" id="myTab" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="upload-tab" data-bs-toggle="tab" data-bs-target="#upload" type="button" role="tab">XML Upload</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab">Manual Entry</button>
+  </li>
+</ul>
+<div class="tab-content mt-3" id="myTabContent">
+  <div class="tab-pane fade show active" id="upload" role="tabpanel">
+    <div class="card">
+        <div class="card-body">
+            <form action="{{ url_for('upload_file') }}" method="POST" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label for="file" class="form-label">Select XML File (NFe/CTe)</label>
+                    <input class="form-control" type="file" id="file" name="file" accept=".xml" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Upload & Parse</button>
+            </form>
+        </div>
+    </div>
+  </div>
+  <div class="tab-pane fade" id="manual" role="tabpanel">
+    <div class="card">
+        <div class="card-body">
+            <form action="{{ url_for('manual_entry') }}" method="POST" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label class="form-label">Sacado Name</label>
+                    <input type="text" class="form-control" name="sacado_name" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">CPF/CNPJ</label>
+                    <input type="text" class="form-control" name="sacado_doc" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Amount (R$)</label>
+                    <input type="number" step="0.01" class="form-control" name="amount" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Issue Date</label>
+                    <input type="date" class="form-control" name="issue_date" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Document Number</label>
+                    <input type="text" class="form-control" name="doc_number" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Upload PDF (Lastro)</label>
+                    <input class="form-control" type="file" name="file" accept=".pdf" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Manual Entry</button>
+            </form>
+        </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
