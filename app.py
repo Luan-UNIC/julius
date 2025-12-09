@@ -510,7 +510,7 @@ def generate_boleto():
                 'amount': total_amount,
                 'sacado_name': sacado_name,
                 'sacado_doc': doc,
-                'sacado_address': 'Endereço não cadastrado',
+            'sacado_address': inv_list[0].sacado_address if inv_list and inv_list[0].sacado_address else 'Endereço não cadastrado',
                 'barcode': barcode,
                 'nosso_numero': formatted_nn,
                 'doc_number': f"INV-{boleto.id}",

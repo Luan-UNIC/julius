@@ -50,6 +50,39 @@
                     <input type="text" class="form-control" name="doc_number" required>
                 </div>
                 <div class="mb-3">
+                    <label class="form-label">Espécie</label>
+                    <select class="form-select" name="especie" required>
+                        <option value="DM" selected>Duplicata Mercantil (DM)</option>
+                        <option value="DS">Duplicata de Serviço (DS)</option>
+                        <option value="LC">Letra de Câmbio (LC)</option>
+                    </select>
+                </div>
+
+                <h5 class="mt-4 border-bottom pb-2">Sacado Address</h5>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Address (Street + Number)</label>
+                        <input type="text" class="form-control" name="sacado_address" required placeholder="Ex: Rua A, 123">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Neighborhood</label>
+                        <input type="text" class="form-control" name="sacado_neighborhood" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">City</label>
+                        <input type="text" class="form-control" name="sacado_city" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">State (UF)</label>
+                        <input type="text" class="form-control" name="sacado_state" maxlength="2" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">ZIP (CEP)</label>
+                        <input type="text" class="form-control" name="sacado_zip" required>
+                    </div>
+                </div>
+
+                <div class="mb-3 mt-3">
                     <label class="form-label">Upload PDF (Lastro)</label>
                     <input class="form-control" type="file" name="file" accept=".pdf" required>
                 </div>
