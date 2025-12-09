@@ -468,7 +468,7 @@ def generate_boleto():
                 bank=bank_code,
                 digitable_line=digitable_line,
                 barcode=barcode,
-                status='pending'  # Changed from 'printed' to 'pending'
+                status='printed'
             )
             db.session.add(boleto)
             db.session.flush()  # Get boleto ID without committing
@@ -647,7 +647,7 @@ def approve_boletos():
         boletos = get_active_boletos().filter(Boleto.id.in_(boleto_ids)).all()
         approved_count = 0
         for b in boletos:
-            if b.status == 'pending':
+            if b.status in ['pending', 'printed']:
                 old_status = b.status
                 b.status = 'approved'
                 log_transaction('boleto', b.id, 'approved', {

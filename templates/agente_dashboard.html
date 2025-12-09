@@ -25,7 +25,7 @@
                     {% for boleto in boletos %}
                     <tr>
                         <td>
-                            {% if boleto.status == 'printed' %}
+                            {% if boleto.status == 'printed' or boleto.status == 'pending' %}
                             <input type="checkbox" name="boleto_ids" value="{{ boleto.id }}">
                             {% endif %}
                         </td>
