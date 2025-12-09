@@ -47,6 +47,7 @@ class CnabService:
             Formatted string of exact length
         """
         text = str(text) if text is not None else ''
+        text = text.upper()  # Uppercase all text
         text = text[:length]  # Truncate if too long
         
         if align == 'right':
