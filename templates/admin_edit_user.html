@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2>Editar Usuário: {{ user.username }}</h2>
+        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary btn-sm">
+            &larr; Voltar
+        </a>
+    </div>
+</div>
+
+<form method="POST">
+    <!-- User Details Section -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Dados Cadastrais (Cedente)</h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Razão Social</label>
+                    <input type="text" class="form-control" name="razao_social" value="{{ user.razao_social or '' }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">CNPJ (Apenas números)</label>
+                    <input type="text" class="form-control" name="cnpj" value="{{ user.cnpj or '' }}" pattern="\d{14}" title="14 dígitos numéricos" required>
+                </div>
+            </div>
+            <h6 class="mt-4 mb-3 border-bottom pb-2">Endereço Completo</h6>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Logradouro (Rua, Av, etc)</label>
+                    <input type="text" class="form-control" name="address_street" value="{{ user.address_street or '' }}" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Número</label>
+                    <input type="text" class="form-control" name="address_number" value="{{ user.address_number or '' }}" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Complemento</label>
+                    <input type="text" class="form-control" name="address_complement" value="{{ user.address_complement or '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Bairro</label>
+                    <input type="text" class="form-control" name="address_neighborhood" value="{{ user.address_neighborhood or '' }}" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Cidade</label>
+                    <input type="text" class="form-control" name="address_city" value="{{ user.address_city or '' }}" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">UF</label>
+                    <input type="text" class="form-control" name="address_state" value="{{ user.address_state or '' }}" maxlength="2" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">CEP</label>
+                    <input type="text" class="form-control" name="address_zip" value="{{ user.address_zip or '' }}" required>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bank Configurations -->
+    <div class="row">
+        <!-- Santander Config -->
+        <div class="col-md-6">
+            <div class="card shadow-sm mb-4 border-danger">
+                <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Santander (FIDC)</h5>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="santander_active" id="santander_active" {% if santander and santander.is_active %}checked{% endif %}>
+                        <label class="form-check-label text-white" for="santander_active">Ativo</label>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% if santander %}
+                        <div class="mb-3">
+                            <label class="form-label">Agência (4 dígitos)</label>
+                            <input type="text" class="form-control" name="santander_agency" value="{{ santander.agency or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Conta Corrente (9 dígitos + DV)</label>
+                            <input type="text" class="form-control" name="santander_account" value="{{ santander.account or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Código Transmissão</label>
+                            <input type="text" class="form-control" name="santander_codigo_transmissao" value="{{ santander.codigo_transmissao or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Carteira</label>
+                            <input type="text" class="form-control" name="santander_wallet" value="{{ santander.wallet or '101' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Convênio</label>
+                            <input type="text" class="form-control" name="santander_convenio" value="{{ santander.convenio or '' }}">
+                        </div>
+                        <hr>
+                        <h6 class="mb-3">Controle Nosso Número</h6>
+                        <div class="row g-2">
+                            <div class="col-4">
+                                <label class="form-label small">Atual</label>
+                                <input type="number" class="form-control form-control-sm" name="santander_current_nn" value="{{ santander.current_nosso_numero }}">
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small">Min</label>
+                                <input type="number" class="form-control form-control-sm" name="santander_min_nn" value="{{ santander.min_nosso_numero }}">
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small">Max</label>
+                                <input type="number" class="form-control form-control-sm" name="santander_max_nn" value="{{ santander.max_nosso_numero }}">
+                            </div>
+                        </div>
+                        <hr>
+                        <h6 class="mb-3">Instruções Financeiras</h6>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="form-label small">Juros Mensal (%)</label>
+                                <input type="number" step="0.01" class="form-control" name="santander_juros" value="{{ santander.juros_percent or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Multa (%)</label>
+                                <input type="number" step="0.01" class="form-control" name="santander_multa" value="{{ santander.multa_percent or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Protesto (Dias)</label>
+                                <input type="number" class="form-control" name="santander_protesto" value="{{ santander.protesto_dias or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Baixa (Dias)</label>
+                                <input type="number" class="form-control" name="santander_baixa" value="{{ santander.baixa_dias or 90 }}">
+                            </div>
+                        </div>
+                    {% else %}
+                        <p class="text-danger">Configuração não encontrada.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- BMP Config -->
+        <div class="col-md-6">
+            <div class="card shadow-sm mb-4 border-info">
+                <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">BMP Money Plus</h5>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="bmp_active" id="bmp_active" {% if bmp and bmp.is_active %}checked{% endif %}>
+                        <label class="form-check-label text-white" for="bmp_active">Ativo</label>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% if bmp %}
+                        <div class="mb-3">
+                            <label class="form-label">Agência</label>
+                            <input type="text" class="form-control" name="bmp_agency" value="{{ bmp.agency or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Conta (7 dígitos + DV)</label>
+                            <input type="text" class="form-control" name="bmp_account" value="{{ bmp.account or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Carteira (Ex: 19)</label>
+                            <input type="text" class="form-control" name="bmp_wallet" value="{{ bmp.wallet or '109' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Convênio</label>
+                            <input type="text" class="form-control" name="bmp_convenio" value="{{ bmp.convenio or '' }}">
+                        </div>
+                        <hr>
+                        <h6 class="mb-3">Controle Nosso Número</h6>
+                        <div class="row g-2">
+                            <div class="col-4">
+                                <label class="form-label small">Atual</label>
+                                <input type="number" class="form-control form-control-sm" name="bmp_current_nn" value="{{ bmp.current_nosso_numero }}">
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small">Min</label>
+                                <input type="number" class="form-control form-control-sm" name="bmp_min_nn" value="{{ bmp.min_nosso_numero }}">
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small">Max</label>
+                                <input type="number" class="form-control form-control-sm" name="bmp_max_nn" value="{{ bmp.max_nosso_numero }}">
+                            </div>
+                        </div>
+                        <hr>
+                        <h6 class="mb-3">Instruções Financeiras</h6>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="form-label small">Juros Mensal (%)</label>
+                                <input type="number" step="0.01" class="form-control" name="bmp_juros" value="{{ bmp.juros_percent or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Multa (%)</label>
+                                <input type="number" step="0.01" class="form-control" name="bmp_multa" value="{{ bmp.multa_percent or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Protesto (Dias)</label>
+                                <input type="number" class="form-control" name="bmp_protesto" value="{{ bmp.protesto_dias or 0 }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small">Baixa (Dias)</label>
+                                <input type="number" class="form-control" name="bmp_baixa" value="{{ bmp.baixa_dias or 90 }}">
+                            </div>
+                        </div>
+                    {% else %}
+                        <p class="text-danger">Configuração não encontrada.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-grid gap-2 mb-5">
+        <button type="submit" class="btn btn-success btn-lg">Salvar Alterações</button>
+    </div>
+</form>
+{% endblock %}

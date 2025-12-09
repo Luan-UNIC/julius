@@ -152,6 +152,8 @@ def index():
             return redirect(url_for('cedente_dashboard'))
         elif current_user.role == 'agente':
             return redirect(url_for('agente_dashboard'))
+        elif current_user.role == 'admin':
+            return redirect(url_for('admin_dashboard'))
     return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -241,52 +243,16 @@ def cedente_dashboard():
                          date_from=date_from,
                          date_to=date_to)
 
-@app.route('/cedente/settings', methods=['GET', 'POST'])
+@app.route('/cedente/settings', methods=['GET'])
 @login_required
 @require_role('cedente')
 def cedente_settings():
+    """Read-only view of bank settings for Cedente."""
     santander_config = BankConfig.query.filter_by(user_id=current_user.id, bank_type='santander').first()
     bmp_config = BankConfig.query.filter_by(user_id=current_user.id, bank_type='bmp').first()
     
-    if request.method == 'POST':
-        try:
-            # Santander
-            santander_config.agency = request.form.get('santander_agency')
-            santander_config.account = request.form.get('santander_account')
-            santander_config.wallet = request.form.get('santander_wallet')
-            santander_config.convenio = request.form.get('santander_convenio')
-            santander_config.min_nosso_numero = int(request.form.get('santander_min_nn'))
-            santander_config.max_nosso_numero = int(request.form.get('santander_max_nn'))
-            santander_config.current_nosso_numero = int(request.form.get('santander_current_nn'))
-            santander_config.is_active = request.form.get('santander_active') == 'on'
-            
-            # BMP
-            bmp_config.agency = request.form.get('bmp_agency')
-            bmp_config.account = request.form.get('bmp_account')
-            bmp_config.wallet = request.form.get('bmp_wallet')
-            bmp_config.convenio = request.form.get('bmp_convenio')
-            bmp_config.min_nosso_numero = int(request.form.get('bmp_min_nn'))
-            bmp_config.max_nosso_numero = int(request.form.get('bmp_max_nn'))
-            bmp_config.current_nosso_numero = int(request.form.get('bmp_current_nn'))
-            bmp_config.is_active = request.form.get('bmp_active') == 'on'
-            
-            # Validate at least one bank is active
-            if not santander_config.is_active and not bmp_config.is_active:
-                flash("Pelo menos um banco deve estar ativo.", "error")
-                return redirect(url_for('cedente_settings'))
-            
-            db.session.commit()
-            flash("Configurações atualizadas com sucesso!", "success")
-            logger.info(f"User {current_user.id} updated bank settings")
-            return redirect(url_for('cedente_settings'))
-        except ValueError as e:
-            flash(f"Erro de validação: {str(e)}", "error")
-        except Exception as e:
-            db.session.rollback()
-            flash(f"Erro ao atualizar configurações: {str(e)}", "error")
-            logger.error(f"Error updating settings for user {current_user.id}: {str(e)}")
-
-    return render_template('cedente_settings.html', santander=santander_config, bmp=bmp_config)
+    flash("As configurações bancárias são gerenciadas pelo administrador.", "info")
+    return render_template('cedente_settings.html', santander=santander_config, bmp=bmp_config, readonly=True)
 
 @app.route('/upload', methods=['GET', 'POST'])
 @login_required
@@ -316,60 +282,82 @@ def upload_file():
         file_type, data = XmlParser.parse_file(filepath)
         
         if file_type and data:
-            invoice = Invoice(
-                user_id=current_user.id,
-                upload_type=file_type,
-                file_path=filepath,
-                original_filename=filename,
-                sacado_name=data['sacado_name'],
-                sacado_doc=data['sacado_doc'],
-                amount=data['amount'],
-                issue_date=data['issue_date'],
-                doc_number=data['doc_number']
-            )
-            db.session.add(invoice)
-            db.session.commit()
-            flash('File uploaded and parsed successfully!')
-            return redirect(url_for('cedente_dashboard'))
+            # Convert date to string for template
+            data['issue_date'] = data['issue_date'].strftime('%Y-%m-%d')
+
+            # Instead of saving immediately, redirect to review page
+            return render_template('review_invoice.html',
+                                 data=data,
+                                 file_path=filepath,
+                                 original_filename=filename,
+                                 upload_type=file_type)
         else:
             flash('Failed to parse XML file. Ensure it is a valid NFe or CTe.')
             return redirect(url_for('upload_page'))
 
+@app.route('/save_invoice', methods=['POST'])
+@login_required
+def save_invoice():
+    """Final save after review or manual entry."""
+    try:
+        # Get data from form
+        upload_type = request.form.get('upload_type', 'manual')
+        file_path = request.form.get('file_path')
+        original_filename = request.form.get('original_filename')
+
+        # Handle file upload for manual entry if applicable
+        if 'file' in request.files and request.files['file'].filename:
+            file = request.files['file']
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            if not os.path.exists(app.config['UPLOAD_FOLDER']):
+                os.makedirs(app.config['UPLOAD_FOLDER'])
+            file.save(filepath)
+            file_path = filepath
+            original_filename = filename
+            upload_type = 'manual'
+
+        invoice = Invoice(
+            user_id=current_user.id,
+            upload_type=upload_type,
+            file_path=file_path,
+            original_filename=original_filename,
+
+            # Payer Info
+            sacado_name=request.form['sacado_name'],
+            sacado_doc=request.form['sacado_doc'],
+            sacado_address=request.form['sacado_address'],
+            sacado_neighborhood=request.form['sacado_neighborhood'],
+            sacado_city=request.form['sacado_city'],
+            sacado_state=request.form['sacado_state'],
+            sacado_zip=request.form['sacado_zip'],
+
+            # Invoice Info
+            amount=float(request.form['amount']),
+            issue_date=datetime.strptime(request.form['issue_date'], '%Y-%m-%d').date(),
+            doc_number=request.form['doc_number'],
+            especie=request.form.get('especie', 'DM')
+        )
+
+        db.session.add(invoice)
+        db.session.commit()
+
+        flash('Fatura salva com sucesso!', 'success')
+        return redirect(url_for('cedente_dashboard'))
+
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Erro ao salvar fatura: {str(e)}', 'error')
+        logger.error(f"Error saving invoice: {str(e)}")
+        return redirect(url_for('upload_page'))
+
 @app.route('/upload/manual', methods=['POST'])
 @login_required
 def manual_entry():
-    sacado_name = request.form['sacado_name']
-    sacado_doc = request.form['sacado_doc']
-    amount = float(request.form['amount'])
-    issue_date = datetime.strptime(request.form['issue_date'], '%Y-%m-%d').date()
-    doc_number = request.form['doc_number']
-    
-    file = request.files['file']
-    if file:
-        filename = secure_filename(file.filename)
-        if not os.path.exists(app.config['UPLOAD_FOLDER']):
-            os.makedirs(app.config['UPLOAD_FOLDER'])
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-    else:
-        filepath = None
-        filename = None
-
-    invoice = Invoice(
-        user_id=current_user.id,
-        upload_type='manual',
-        file_path=filepath,
-        original_filename=filename,
-        sacado_name=sacado_name,
-        sacado_doc=sacado_doc,
-        amount=amount,
-        issue_date=issue_date,
-        doc_number=doc_number
-    )
-    db.session.add(invoice)
-    db.session.commit()
-    flash('Manual entry saved successfully!')
-    return redirect(url_for('cedente_dashboard'))
+    """Legacy route redirection or direct handling."""
+    # This might be called directly from upload.html manual tab
+    # It acts same as save_invoice but from different form
+    return save_invoice()
 
 @app.route('/cedente/generate_boleto', methods=['POST'])
 @login_required
@@ -1051,6 +1039,83 @@ def export_boletos_csv():
         logger.error(f"Error exporting boletos: {str(e)}")
         return redirect(url_for('cedente_dashboard' if current_user.role == 'cedente' else 'agente_dashboard'))
 
+# --- Admin Routes ---
+
+@app.route('/admin/dashboard')
+@login_required
+@require_role('admin')
+def admin_dashboard():
+    users = User.query.filter(User.role != 'admin').all()
+    return render_template('admin_dashboard.html', users=users)
+
+@app.route('/admin/user/<int:user_id>', methods=['GET', 'POST'])
+@login_required
+@require_role('admin')
+def admin_edit_user(user_id):
+    user = User.query.get_or_404(user_id)
+    santander_config = BankConfig.query.filter_by(user_id=user.id, bank_type='santander').first()
+    bmp_config = BankConfig.query.filter_by(user_id=user.id, bank_type='bmp').first()
+
+    if request.method == 'POST':
+        try:
+            # User Details
+            user.razao_social = request.form.get('razao_social')
+            user.cnpj = request.form.get('cnpj')
+            user.address_street = request.form.get('address_street')
+            user.address_number = request.form.get('address_number')
+            user.address_complement = request.form.get('address_complement')
+            user.address_neighborhood = request.form.get('address_neighborhood')
+            user.address_city = request.form.get('address_city')
+            user.address_state = request.form.get('address_state')
+            user.address_zip = request.form.get('address_zip')
+
+            # Santander Config
+            if santander_config:
+                santander_config.agency = request.form.get('santander_agency')
+                santander_config.account = request.form.get('santander_account')
+                santander_config.wallet = request.form.get('santander_wallet')
+                santander_config.convenio = request.form.get('santander_convenio')
+                santander_config.codigo_transmissao = request.form.get('santander_codigo_transmissao')
+                santander_config.min_nosso_numero = int(request.form.get('santander_min_nn') or 0)
+                santander_config.max_nosso_numero = int(request.form.get('santander_max_nn') or 999999999)
+                santander_config.current_nosso_numero = int(request.form.get('santander_current_nn') or 1)
+
+                santander_config.juros_percent = float(request.form.get('santander_juros') or 0)
+                santander_config.multa_percent = float(request.form.get('santander_multa') or 0)
+                santander_config.protesto_dias = int(request.form.get('santander_protesto') or 0)
+                santander_config.baixa_dias = int(request.form.get('santander_baixa') or 0)
+
+                santander_config.is_active = request.form.get('santander_active') == 'on'
+
+            # BMP Config
+            if bmp_config:
+                bmp_config.agency = request.form.get('bmp_agency')
+                bmp_config.account = request.form.get('bmp_account')
+                bmp_config.wallet = request.form.get('bmp_wallet')
+                bmp_config.convenio = request.form.get('bmp_convenio')
+                bmp_config.min_nosso_numero = int(request.form.get('bmp_min_nn') or 0)
+                bmp_config.max_nosso_numero = int(request.form.get('bmp_max_nn') or 999999999)
+                bmp_config.current_nosso_numero = int(request.form.get('bmp_current_nn') or 1)
+
+                bmp_config.juros_percent = float(request.form.get('bmp_juros') or 0)
+                bmp_config.multa_percent = float(request.form.get('bmp_multa') or 0)
+                bmp_config.protesto_dias = int(request.form.get('bmp_protesto') or 0)
+                bmp_config.baixa_dias = int(request.form.get('bmp_baixa') or 0)
+
+                bmp_config.is_active = request.form.get('bmp_active') == 'on'
+
+            db.session.commit()
+            flash('Usuário e configurações atualizados com sucesso.', 'success')
+            return redirect(url_for('admin_dashboard'))
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Erro ao atualizar: {str(e)}', 'error')
+            logger.error(f"Error updating user {user_id}: {str(e)}")
+
+    return render_template('admin_edit_user.html', user=user, santander=santander_config, bmp=bmp_config)
+
+
 # --- CLI to create DB ---
 def init_db():
     with app.app_context():
@@ -1100,6 +1165,14 @@ def init_db():
                 role='agente'
             )
             db.session.add(agente)
+
+        if not User.query.filter_by(username='admin').first():
+            admin = User(
+                username='admin',
+                password_hash=generate_password_hash('admin'),
+                role='admin'
+            )
+            db.session.add(admin)
         
         db.session.commit()
         print("Database initialized.")

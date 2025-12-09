@@ -117,19 +117,26 @@ class CnabService:
         h_arq += '0000'  # 004-007: Lote (0000 for file header)
         h_arq += '0'  # 008: Tipo de Registro (0=Header Arquivo)
         h_arq += ' ' * 8  # 009-016: Reservado
-        h_arq += '2'  # 017: Tipo Inscrição (1=CPF, 2=CNPJ) - Assuming CNPJ
-        h_arq += CnabService.format_num('00000000000000', 15)  # 018-032: CNPJ (mock - should be from User)
+        h_arq += '2'  # 017: Tipo Inscrição (1=CPF, 2=CNPJ)
+        # Use Cedente CNPJ from User model
+        cedente_cnpj = ''.join(filter(str.isdigit, cedente.cnpj or ''))
+        h_arq += CnabService.format_num(cedente_cnpj, 15)  # 018-032: CNPJ
+
+        # 033-047: Código de Transmissão (Use config or fallback)
+        if santander_config.codigo_transmissao:
+             codigo_transmissao = CnabService.format_num(santander_config.codigo_transmissao, 15)
+        else:
+            # Fallback to Agency + Account logic
+            codigo_transmissao = (
+                CnabService.format_num(santander_config.agency, 4) +
+                ' ' +  # DAC of agency (1 char)
+                CnabService.format_num(santander_config.account.split('-')[0] if '-' in santander_config.account else santander_config.account, 9) +
+                (santander_config.account.split('-')[1][0] if '-' in santander_config.account else '0')  # DAC of account
+            )
         
-        # 033-047: Código de Transmissão (Agency+Account+DAC)
-        codigo_transmissao = (
-            CnabService.format_num(santander_config.agency, 4) +
-            ' ' +  # DAC of agency (1 char)
-            CnabService.format_num(santander_config.account.split('-')[0] if '-' in santander_config.account else santander_config.account, 9) +
-            (santander_config.account.split('-')[1][0] if '-' in santander_config.account else '0')  # DAC of account
-        )
         h_arq += codigo_transmissao  # 033-047: Código de Transmissão
         h_arq += ' ' * 25  # 048-072: Reservado
-        h_arq += CnabService.format_text(cedente.username, 30)  # 073-102: Nome da Empresa
+        h_arq += CnabService.format_text(cedente.razao_social or cedente.username, 30)  # 073-102: Nome da Empresa
         h_arq += CnabService.format_text('BANCO SANTANDER', 30)  # 103-132: Nome do Banco
         h_arq += ' ' * 10  # 133-142: Reservado
         h_arq += '1'  # 143: Código Remessa (1=Remessa)
@@ -152,11 +159,11 @@ class CnabService:
         h_lote += '030'  # 014-016: Versão do Layout do Lote
         h_lote += ' '  # 017: Reservado
         h_lote += '2'  # 018: Tipo Inscrição
-        h_lote += CnabService.format_num('00000000000000', 15)  # 019-033: CNPJ
+        h_lote += CnabService.format_num(cedente_cnpj, 15)  # 019-033: CNPJ
         h_lote += ' ' * 20  # 034-053: Reservado
         h_lote += codigo_transmissao  # 054-068: Código de Transmissão (15 chars)
         h_lote += ' ' * 5  # 069-073: Reservado
-        h_lote += CnabService.format_text(cedente.username, 30)  # 074-103: Nome Beneficiário
+        h_lote += CnabService.format_text(cedente.razao_social or cedente.username, 30)  # 074-103: Nome Beneficiário
         h_lote += ' ' * 40  # 104-143: Mensagem 1
         h_lote += ' ' * 40  # 144-183: Mensagem 2
         h_lote += CnabService.format_num(1, 8)  # 184-191: Número Remessa
@@ -215,18 +222,44 @@ class CnabService:
             seg_p += datetime.now().strftime('%d%m%Y')  # 110-117: Data Emissão
             seg_p += '0'  # 118: Código Juros (0=Isento)
             seg_p += '0' * 8  # 119-126: Data Juros
-            seg_p += '0' * 15  # 127-141: Valor Juros/Mora
+            # Financial Instructions from Config
+            if boleto_config.juros_percent:
+                 # Juros Mensal / 30 = Juros Diario
+                 valor_juros_dia = (boleto.amount * (boleto_config.juros_percent / 100)) / 30
+                 seg_p += '1' # Valor por dia
+                 # Data Juros = Vencimento + 1 dia (implicit logic usually, but here requires date)
+                 # CNAB 240 Santander usually implies start from due date, but let's check manual.
+                 # Using 00000000 often means "standard"
+                 seg_p += '0' * 8
+                 seg_p += CnabService.format_num(valor_juros_dia, 15, decimals=2)
+            else:
+                 seg_p += '0' * 1 # Isento
+                 seg_p += '0' * 8
+                 seg_p += '0' * 15
+
             seg_p += '0'  # 142: Código Desconto (0=Sem Desconto)
             seg_p += '0' * 8  # 143-150: Data Desconto
             seg_p += '0' * 15  # 151-165: Valor Desconto
             seg_p += '0' * 15  # 166-180: IOF (5 decimals, but 15 total)
             seg_p += '0' * 15  # 181-195: Abatimento
             seg_p += CnabService.format_text(str(boleto.id), 25)  # 196-220: Identificação na Empresa
-            seg_p += '3'  # 221: Código Protesto (3=Não Protestar)
-            seg_p += '00'  # 222-223: Dias para Protesto
-            seg_p += '1'  # 224: Código Baixa (1=Baixar/Devolver)
-            seg_p += '0'  # 225: Reservado
-            seg_p += '90'  # 226-227: Dias para Baixa
+
+            # Protesto / Baixa
+            if boleto_config.protesto_dias:
+                seg_p += '1' # Protestar Dias Corridos
+                seg_p += CnabService.format_num(boleto_config.protesto_dias, 2)
+            else:
+                seg_p += '3'  # 221: Código Protesto (3=Não Protestar)
+                seg_p += '00'  # 222-223: Dias para Protesto
+
+            if boleto_config.baixa_dias:
+                seg_p += '1'  # 224: Código Baixa (1=Baixar/Devolver)
+                seg_p += '0'  # 225: Reservado
+                seg_p += CnabService.format_num(boleto_config.baixa_dias, 2)
+            else:
+                seg_p += '1'
+                seg_p += '0'
+                seg_p += '90'  # 226-227: Dias para Baixa
             seg_p += '09'  # 228-229: Código Moeda (09=Real)
             seg_p += ' ' * 11  # 230-240: Reservado
             
@@ -249,12 +282,21 @@ class CnabService:
             seg_q += tipo_insc  # 018
             seg_q += CnabService.format_num(doc_clean, 15)  # 019-033: CNPJ/CPF
             seg_q += CnabService.format_text(boleto.sacado_name, 40)  # 034-073: Nome
-            seg_q += CnabService.format_text('Rua Exemplo, 123', 40)  # 074-113: Endereço (mock)
-            seg_q += CnabService.format_text('Centro', 15)  # 114-128: Bairro (mock)
-            seg_q += '01000'  # 129-133: CEP (5 digits, mock)
-            seg_q += '000'  # 134-136: Sufixo CEP (mock)
-            seg_q += CnabService.format_text('Sao Paulo', 15)  # 137-151: Cidade (mock)
-            seg_q += 'SP'  # 152-153: UF (mock)
+
+            # Get Invoice Address if available (take first invoice)
+            inv = boleto.invoices[0] if boleto.invoices else None
+            end_rua = inv.sacado_address if inv else ''
+            end_bairro = inv.sacado_neighborhood if inv else ''
+            end_cidade = inv.sacado_city if inv else ''
+            end_uf = inv.sacado_state if inv else ''
+            end_cep = ''.join(filter(str.isdigit, inv.sacado_zip or ''))
+
+            seg_q += CnabService.format_text(end_rua, 40)  # 074-113: Endereço
+            seg_q += CnabService.format_text(end_bairro, 15)  # 114-128: Bairro
+            seg_q += CnabService.format_num(end_cep[:5], 5)  # 129-133: CEP
+            seg_q += CnabService.format_num(end_cep[5:], 3)  # 134-136: Sufixo CEP
+            seg_q += CnabService.format_text(end_cidade, 15)  # 137-151: Cidade
+            seg_q += CnabService.format_text(end_uf, 2)  # 152-153: UF
             seg_q += '0'  # 154: Tipo Inscrição Sacador/Avalista (0=Não tem)
             seg_q += '0' * 15  # 155-169: CNPJ Sacador
             seg_q += ' ' * 40  # 170-209: Nome Sacador
@@ -330,7 +372,7 @@ class CnabService:
         h += '01'  # 010-011: Código Serviço (01=Cobrança)
         h += CnabService.format_text('COBRANCA', 15)  # 012-026: Literal Serviço
         h += CnabService.format_text(bmp_config.convenio or '', 20)  # 027-046: Código Cedente
-        h += CnabService.format_text(cedente.username, 30)  # 047-076: Nome Cedente
+        h += CnabService.format_text(cedente.razao_social or cedente.username, 30)  # 047-076: Nome Cedente
         h += '274'  # 077-079: Código Banco (BMP Money Plus)
         h += CnabService.format_text('BMP MONEY PLUS', 15)  # 080-094: Nome Banco
         h += datetime.now().strftime('%d%m%y')  # 095-100: Data Geração (DDMMYY)
@@ -354,7 +396,8 @@ class CnabService:
             
             d = '1'  # 001: Tipo Registro
             d += '02'  # 002-003: Tipo Inscrição Cedente (02=CNPJ)
-            d += CnabService.format_num('00000000000000', 14)  # 004-017: CNPJ Cedente (mock)
+            cedente_cnpj = ''.join(filter(str.isdigit, cedente.cnpj or ''))
+            d += CnabService.format_num(cedente_cnpj, 14)  # 004-017: CNPJ Cedente
             d += '0'  # 018: Zero
             d += '0'  # 019: Zero
             d += ' '  # 020: Branco
@@ -398,15 +441,34 @@ class CnabService:
             d += CnabService.format_num(boleto.amount, 13, decimals=2)  # 127-139: Valor
             d += '274'  # 140-142: Banco
             d += '00000'  # 143-147: Agência Cobradora (00000=qualquer)
-            d += '04'  # 148-149: Espécie (04=Duplicata de Serviço)
+
+            # Espécie do Título
+            # Map known codes or use default 04 (DS)
+            especie_map = {'DM': '02', 'DS': '04'}
+            inv = boleto.invoices[0] if boleto.invoices else None
+            especie_code = especie_map.get(inv.especie, '04') if inv else '04'
+
+            d += especie_code  # 148-149: Espécie
             d += 'N'  # 150: Aceite
             d += datetime.now().strftime('%d%m%y')  # 151-156: Data Emissão
             
-            # Instructions
-            d += '00'  # 157-158: Instrução 1
-            d += '00'  # 159-160: Instrução 2
+            # Instructions from Config
+            instr1 = '00'
+            instr2 = '00'
+            if boleto_config.protesto_dias:
+                instr1 = '09' # Protestar
+            elif boleto_config.baixa_dias:
+                instr1 = '15' # Devolver/Baixar
+
+            d += instr1  # 157-158: Instrução 1
+            d += instr2  # 159-160: Instrução 2
             
-            d += CnabService.format_num(0, 13, decimals=2)  # 161-173: Juros/Mora
+            # Juros
+            val_juros = 0
+            if boleto_config.juros_percent:
+                 val_juros = (boleto.amount * (boleto_config.juros_percent / 100)) / 30
+
+            d += CnabService.format_num(val_juros, 13, decimals=2)  # 161-173: Juros/Mora
             d += '00' + '00' + '00'  # 174-179: Data Desconto (zeros = sem desconto)
             d += CnabService.format_num(0, 13, decimals=2)  # 180-192: Valor Desconto
             d += CnabService.format_num(0, 13, decimals=2)  # 193-205: IOF
@@ -419,11 +481,27 @@ class CnabService:
             d += CnabService.format_num(doc_clean, 14)  # 221-234: CNPJ/CPF
             
             d += CnabService.format_text(boleto.sacado_name, 40)  # 235-274: Nome Sacado
-            d += CnabService.format_text('Rua Exemplo 123', 40)  # 275-314: Endereço (mock)
-            d += CnabService.format_text('Centro', 12)  # 315-326: Bairro (mock)
-            d += '01000000'  # 327-334: CEP (mock)
-            d += CnabService.format_text('Sao Paulo', 15)  # 335-349: Cidade (mock)
-            d += 'SP'  # 350-351: UF (mock)
+
+            # Address Logic for BMP (40 chars total: Rua + Num + Comp)
+            inv = boleto.invoices[0] if boleto.invoices else None
+            full_address = ''
+            bairro = ''
+            cep = '00000000'
+            cidade = ''
+            uf = '  '
+
+            if inv:
+                full_address = f"{inv.sacado_address or ''}"[:40]
+                bairro = inv.sacado_neighborhood or ''
+                cep = ''.join(filter(str.isdigit, inv.sacado_zip or '00000000'))
+                cidade = inv.sacado_city or ''
+                uf = inv.sacado_state or '  '
+
+            d += CnabService.format_text(full_address, 40)  # 275-314: Endereço
+            d += CnabService.format_text(bairro, 12)  # 315-326: Bairro
+            d += CnabService.format_num(cep, 8)  # 327-334: CEP
+            d += CnabService.format_text(cidade, 15)  # 335-349: Cidade
+            d += CnabService.format_text(uf, 2)  # 350-351: UF
             
             d += ' ' * 42  # 352-393: Sacador/Avalista + Brancos
             d += '0'  # 394: Moeda (0=Real)
@@ -691,7 +769,16 @@ class BoletoBuilder:
         c.setFont("Helvetica", 6)
         c.drawString(left_margin + 1*mm, box_y - 3*mm, "Beneficiário/Cedente")
         c.setFont("Helvetica", 8)
-        c.drawString(left_margin + 1*mm, box_y - 7*mm, boleto_data.get('cedente_name', 'N/A'))
+
+        cedente_info = boleto_data.get('cedente_name', 'N/A')
+        if boleto_data.get('cedente_doc'):
+            cedente_info += f" - CNPJ/CPF: {boleto_data['cedente_doc']}"
+
+        c.drawString(left_margin + 1*mm, box_y - 7*mm, cedente_info)
+
+        # Cedente Address
+        c.setFont("Helvetica", 6)
+        c.drawString(left_margin + 1*mm, box_y - 9.5*mm, boleto_data.get('cedente_address', ''))
         
         c.line(venc_x, box_y, venc_x, box_y - 10*mm)
         c.setFont("Helvetica", 6)
@@ -786,7 +873,7 @@ class BoletoBuilder:
         c.drawString(left_margin + 1*mm, box_y - 3*mm, "Pagador")
         c.setFont("Helvetica", 8)
         c.drawString(left_margin + 1*mm, box_y - 7*mm, 
-                    f"{boleto_data['sacado_name']} - {boleto_data['sacado_doc']}")
+                    f"{boleto_data['sacado_name']} - CNPJ/CPF: {boleto_data['sacado_doc']}")
         c.setFont("Helvetica", 7)
         c.drawString(left_margin + 1*mm, box_y - 11*mm, 
                     boleto_data.get('sacado_address', 'Endereço não informado'))
@@ -890,7 +977,7 @@ class XmlParser:
             ns: XML namespace
             
         Returns:
-            Dictionary with invoice data
+            Dictionary with invoice data including address
             
         Raises:
             ValueError: If required fields are missing
@@ -907,6 +994,20 @@ class XmlParser:
         cpf = dest.find(f'{{{ns}}}CPF')
         doc = cnpj.text if cnpj is not None else (cpf.text if cpf is not None else '')
         
+        # Address Extraction
+        address = {}
+        ender = dest.find(f'{{{ns}}}enderDest')
+        if ender is not None:
+            address['street'] = ender.find(f'{{{ns}}}xLgr').text if ender.find(f'{{{ns}}}xLgr') is not None else ''
+            address['number'] = ender.find(f'{{{ns}}}nro').text if ender.find(f'{{{ns}}}nro') is not None else ''
+            address['neighborhood'] = ender.find(f'{{{ns}}}xBairro').text if ender.find(f'{{{ns}}}xBairro') is not None else ''
+            address['city'] = ender.find(f'{{{ns}}}xMun').text if ender.find(f'{{{ns}}}xMun') is not None else ''
+            address['state'] = ender.find(f'{{{ns}}}UF').text if ender.find(f'{{{ns}}}UF') is not None else ''
+            address['zip'] = ender.find(f'{{{ns}}}CEP').text if ender.find(f'{{{ns}}}CEP') is not None else ''
+
+            # Combine street and number
+            address['full_street'] = f"{address['street']}, {address['number']}"
+
         # Find Value
         v_nf = tree.find(f'.//{{{ns}}}total/{{{ns}}}ICMSTot/{{{ns}}}vNF')
         amount = float(v_nf.text) if v_nf is not None else 0.0
@@ -932,6 +1033,11 @@ class XmlParser:
         return {
             'sacado_name': name,
             'sacado_doc': doc,
+            'sacado_address': address.get('full_street', ''),
+            'sacado_neighborhood': address.get('neighborhood', ''),
+            'sacado_city': address.get('city', ''),
+            'sacado_state': address.get('state', ''),
+            'sacado_zip': address.get('zip', ''),
             'amount': amount,
             'issue_date': issue_date,
             'doc_number': number
@@ -947,7 +1053,7 @@ class XmlParser:
             ns: XML namespace
             
         Returns:
-            Dictionary with transport invoice data
+            Dictionary with transport invoice data including address
         """
         # Find Value
         v_tprest = tree.find(f'.//{{{ns}}}vPrest/{{{ns}}}vTPrest')
@@ -968,6 +1074,22 @@ class XmlParser:
         
         # Payer Logic - Find toma3 or toma4
         payer_data = {}
+        address_data = {}
+
+        # Helper to extract address from node
+        def extract_address(node):
+            ender = node.find(f'{{{ns}}}enderToma') or node.find(f'{{{ns}}}enderDest') or node.find(f'{{{ns}}}enderReme')
+            if ender is not None:
+                addr = {}
+                addr['street'] = ender.find(f'{{{ns}}}xLgr').text if ender.find(f'{{{ns}}}xLgr') is not None else ''
+                addr['number'] = ender.find(f'{{{ns}}}nro').text if ender.find(f'{{{ns}}}nro') is not None else ''
+                addr['neighborhood'] = ender.find(f'{{{ns}}}xBairro').text if ender.find(f'{{{ns}}}xBairro') is not None else ''
+                addr['city'] = ender.find(f'{{{ns}}}xMun').text if ender.find(f'{{{ns}}}xMun') is not None else ''
+                addr['state'] = ender.find(f'{{{ns}}}UF').text if ender.find(f'{{{ns}}}UF') is not None else ''
+                addr['zip'] = ender.find(f'{{{ns}}}CEP').text if ender.find(f'{{{ns}}}CEP') is not None else ''
+                addr['full_street'] = f"{addr['street']}, {addr['number']}"
+                return addr
+            return {}
         
         toma3 = tree.find(f'.//{{{ns}}}ide/{{{ns}}}toma3')
         if toma3 is not None:
@@ -987,6 +1109,8 @@ class XmlParser:
                         cnpj = role_node.find(f'{{{ns}}}CNPJ')
                         cpf = role_node.find(f'{{{ns}}}CPF')
                         payer_data['doc'] = cnpj.text if cnpj is not None else (cpf.text if cpf is not None else '')
+
+                        address_data = extract_address(role_node)
         
         # Try toma4 if toma3 failed
         if not payer_data:
@@ -998,6 +1122,8 @@ class XmlParser:
                 cnpj = toma4.find(f'{{{ns}}}CNPJ')
                 cpf = toma4.find(f'{{{ns}}}CPF')
                 payer_data['doc'] = cnpj.text if cnpj is not None else (cpf.text if cpf is not None else '')
+
+                address_data = extract_address(toma4)
         
         # Fallback to destinatario
         if not payer_data:
@@ -1008,10 +1134,17 @@ class XmlParser:
                 
                 cnpj = dest.find(f'{{{ns}}}CNPJ')
                 payer_data['doc'] = cnpj.text if cnpj is not None else ''
+
+                address_data = extract_address(dest)
         
         return {
             'sacado_name': payer_data.get('name', 'Unknown'),
             'sacado_doc': payer_data.get('doc', ''),
+            'sacado_address': address_data.get('full_street', ''),
+            'sacado_neighborhood': address_data.get('neighborhood', ''),
+            'sacado_city': address_data.get('city', ''),
+            'sacado_state': address_data.get('state', ''),
+            'sacado_zip': address_data.get('zip', ''),
             'amount': amount,
             'issue_date': issue_date,
             'doc_number': number
