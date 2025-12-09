@@ -92,6 +92,9 @@ class BankConfig(db.Model):
     # Bank activation status
     is_active = db.Column(db.Boolean, default=True, nullable=False, index=True)
     
+    # Sequencial de remessa (incrementado a cada geração de CNAB)
+    sequencial_remessa = db.Column(db.Integer, default=1, nullable=False)
+    
     def __repr__(self) -> str:
         return f'<BankConfig user_id={self.user_id} bank={self.bank_type} active={self.is_active}>'
 
@@ -206,3 +209,30 @@ class TransactionHistory(db.Model):
     
     def __repr__(self) -> str:
         return f'<TransactionHistory {self.action} on {self.entity_type}#{self.entity_id} by user#{self.user_id}>'
+
+
+class CNABFile(db.Model):
+    """
+    CNAB file model for persistence and audit.
+    Stores generated remittance files and their metadata.
+    """
+    __tablename__ = 'cnab_file'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    bank_type = db.Column(db.String(20), nullable=False, index=True)  # 'santander' or 'bmp'
+    
+    filename = db.Column(db.String(100), nullable=False)  # e.g., CB010500001.REM
+    file_path = db.Column(db.String(255), nullable=False)  # Full path to file
+    sequencial = db.Column(db.Integer, nullable=False)  # Sequencial number
+    
+    boleto_count = db.Column(db.Integer, nullable=False)  # Number of boletos in file
+    total_amount = db.Column(db.Float, nullable=False)  # Total amount
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    
+    # Relationships
+    cedente = db.relationship('User', foreign_keys=[user_id], backref=db.backref('cnab_files', lazy=True))
+    
+    def __repr__(self) -> str:
+        return f'<CNABFile {self.filename} - {self.bank_type} - {self.boleto_count} boletos>'

@@ -4,6 +4,8 @@ instance/fidc.db
 instance/fidc.db-journal
 uploads/*
 !uploads/.gitkeep
+cnab_files/*
+!cnab_files/.gitkeep
 *.pdf
 *.db
 .env

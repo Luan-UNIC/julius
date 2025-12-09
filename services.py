@@ -59,6 +59,7 @@ class CnabService:
     def format_num(num: Any, length: int, decimals: int = 0, fill_char: str = '0') -> str:
         """
         Format number to specified length with zero padding.
+        Truncates from left if number is too long (keeps rightmost digits).
         
         Args:
             num: Number to format
@@ -67,7 +68,7 @@ class CnabService:
             fill_char: Character to use for padding
             
         Returns:
-            Formatted numeric string
+            Formatted numeric string of exact length
         """
         if decimals > 0:
             # For monetary values, multiply by 10^decimals to remove decimal point
@@ -75,10 +76,16 @@ class CnabService:
         else:
             num = int(num) if num else 0
         
-        return str(num).zfill(length)
+        num_str = str(num).zfill(length)
+        
+        # Truncate from left if too long (keep rightmost digits)
+        if len(num_str) > length:
+            num_str = num_str[-length:]
+        
+        return num_str
 
     @staticmethod
-    def generate_santander_240(boletos: List[Boleto], cedente: User) -> str:
+    def generate_santander_240(boletos: List[Boleto], cedente: User, sequencial: int = 1) -> Tuple[str, str]:
         """
         Generate CNAB 240 remittance file for Santander Bank.
         
@@ -94,9 +101,10 @@ class CnabService:
         Args:
             boletos: List of Boleto objects to include in remittance
             cedente: User object (cedente/beneficiary)
+            sequencial: Sequencial number for filename (default 1)
             
         Returns:
-            CNAB 240 formatted string
+            Tuple of (CNAB 240 formatted string, filename)
             
         Raises:
             ValueError: If BankConfig not found for Santander
@@ -108,6 +116,10 @@ class CnabService:
         )
         if not santander_config:
             raise ValueError("Santander configuration not found for cedente")
+        
+        # Generate filename: CBDDMMSSSS.REM
+        now = datetime.now()
+        filename = f"CB{now.strftime('%d%m')}{str(sequencial).zfill(5)}.REM"
 
         lines = []
         
@@ -334,10 +346,12 @@ class CnabService:
         lines.append(t_arq)
         
         # Join with CRLF (Windows line ending, standard for CNAB)
-        return "\r\n".join(lines)
+        content = "\r\n".join(lines) + "\r\n"
+        
+        return content, filename
 
     @staticmethod
-    def generate_bmp_400(boletos: List[Boleto], cedente: User) -> str:
+    def generate_bmp_400(boletos: List[Boleto], cedente: User, sequencial: int = 1) -> Tuple[str, str]:
         """
         Generate CNAB 400 remittance file for BMP Money Plus Bank.
         
@@ -349,9 +363,10 @@ class CnabService:
         Args:
             boletos: List of Boleto objects
             cedente: User object (cedente)
+            sequencial: Sequencial number for filename (default 1)
             
         Returns:
-            CNAB 400 formatted string
+            Tuple of (CNAB 400 formatted string, filename)
             
         Raises:
             ValueError: If BankConfig not found for BMP
@@ -366,20 +381,25 @@ class CnabService:
 
         lines = []
         
+        # Generate filename: CBDDMMSSSS.REM
+        now = datetime.now()
+        filename = f"CB{now.strftime('%d%m')}{str(sequencial).zfill(5)}.REM"
+        
         # === HEADER (Record Type 0) ===
         h = '0'  # 001: Tipo Registro
         h += '1'  # 002: Tipo Operação (1=Remessa)
         h += 'REMESSA'  # 003-009: Literal REMESSA
         h += '01'  # 010-011: Código Serviço (01=Cobrança)
         h += CnabService.format_text('COBRANCA', 15)  # 012-026: Literal Serviço
-        h += CnabService.format_text(bmp_config.convenio or '', 20)  # 027-046: Código Cedente
+        # Código da empresa deve ser alinhado à direita com zeros à esquerda
+        h += CnabService.format_num(bmp_config.convenio or '0', 20)  # 027-046: Código Cedente
         h += CnabService.format_text(cedente.razao_social or cedente.username, 30)  # 047-076: Nome Cedente
         h += '274'  # 077-079: Código Banco (BMP Money Plus)
         h += CnabService.format_text('BMP MONEY PLUS', 15)  # 080-094: Nome Banco
-        h += datetime.now().strftime('%d%m%y')  # 095-100: Data Geração (DDMMYY)
+        h += now.strftime('%d%m%y')  # 095-100: Data Geração (DDMMYY)
         h += ' ' * 8  # 101-108: Brancos
         h += 'MX'  # 109-110: Identificação Sistema
-        h += CnabService.format_num(1, 7)  # 111-117: Sequencial Remessa
+        h += CnabService.format_num(sequencial, 7)  # 111-117: Sequencial Remessa
         h += ' ' * 277  # 118-394: Brancos
         h += CnabService.format_num(1, 6)  # 395-400: Sequencial Registro
         
@@ -520,7 +540,9 @@ class CnabService:
         lines.append(t)
         
         # Join with CRLF
-        return "\r\n".join(lines)
+        content = "\r\n".join(lines) + "\r\n"
+        
+        return content, filename
 
 
 class BoletoBuilder:
@@ -602,12 +624,13 @@ class BoletoBuilder:
     @staticmethod
     def calculate_barcode(bank_code: str, currency_code: str, due_date: date, 
                          amount: float, nosso_numero: str, agency: str, 
-                         account: str, carteira: str) -> Tuple[str, str]:
+                         account: str, carteira: str, bank_type: str = 'santander') -> Tuple[str, str]:
         """
         Calculate boleto barcode and digitable line according to Febraban standards.
+        Supports both Santander (033) and BMP (274) banks.
         
         Args:
-            bank_code: 3-digit bank code
+            bank_code: 3-digit bank code ('033' for Santander, '274' for BMP)
             currency_code: Currency code (usually '9' for Real)
             due_date: Due date
             amount: Amount in BRL
@@ -615,14 +638,18 @@ class BoletoBuilder:
             agency: Agency code
             account: Account number
             carteira: Wallet code
+            bank_type: 'santander' or 'bmp' (default 'santander')
             
         Returns:
             Tuple of (barcode_44_digits, digitable_line_47_digits)
         """
         # Calculate fator vencimento (days since 07/10/1997)
+        # Note: Febraban updated the standard in 2025 for dates beyond 21/02/2025 (fator 9999)
+        # For now, we use modulo 10000 to keep it within 4 digits
         base_date = datetime(1997, 10, 7).date()
         days_diff = (due_date - base_date).days
-        fator_vencimento = str(days_diff).zfill(4)
+        # Keep within 4 digits (0000-9999) using modulo
+        fator_vencimento = str(days_diff % 10000).zfill(4)
         
         # Format amount (10 digits, no decimal point)
         amount_str = str(int(amount * 100)).zfill(10)
@@ -635,9 +662,34 @@ class BoletoBuilder:
         # 010-019: Amount
         # 020-044: Free field (bank-specific)
         
-        # Free field for Santander (25 digits): 
-        # 9 (fixo) + Carteira(3) + Nosso Número(12)+ Zeros(1) = 25
-        free_field = '9' + carteira.zfill(3) + str(nosso_numero).zfill(12)[:12]
+        # Build free field based on bank type
+        if bank_type == 'bmp' or bank_code == '274':
+            # BMP Campo Livre (25 digits):
+            # Posição 20-23: Agência (4 dígitos, SEM DV)
+            # Posição 24-25: Código da Carteira (2 dígitos)
+            # Posição 26-36: Nosso Número (11 dígitos, SEM DV)
+            # Posição 37-43: Conta Corrente (7 dígitos, SEM DV)
+            # Posição 44-44: Zero fixo (1 dígito)
+            
+            agency_clean = ''.join(filter(str.isdigit, str(agency)))
+            account_clean = ''.join(filter(str.isdigit, str(account)))
+            if '-' in str(account):
+                account_clean = account.split('-')[0]
+            
+            free_field = (
+                agency_clean.zfill(4) +  # 4 digits
+                carteira.zfill(2)[:2] +  # 2 digits
+                str(nosso_numero).zfill(11)[:11] +  # 11 digits
+                account_clean.zfill(7)[:7] +  # 7 digits
+                '0'  # 1 digit (zero fixo)
+            )
+        else:
+            # Santander Campo Livre (25 digits): 
+            # 9 (fixo) + Carteira(3) + Nosso Número(12) + Zeros(9)
+            free_field = '9' + carteira.zfill(3) + str(nosso_numero).zfill(12)[:12] + '0' * 9
+        
+        # Ensure free field is exactly 25 digits
+        free_field = free_field[:25].ljust(25, '0')
         
         # Build barcode without DV
         barcode_no_dv = (

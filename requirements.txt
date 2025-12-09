@@ -6,3 +6,4 @@ werkzeug
 reportlab
 python-barcode
 Pillow
+python-dotenv

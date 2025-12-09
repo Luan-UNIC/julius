@@ -5,19 +5,21 @@ FIDC Middleware - Flask Application
 Main application file with routes, authentication, and business logic coordination.
 
 Author: FIDC Development Team
-Version: 2.0.0
+Version: 2.1.0
 """
 
 from flask import Flask, render_template, redirect, url_for, request, flash, send_from_directory, jsonify, make_response
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, Invoice, Boleto, BankConfig, TransactionHistory
+from models import db, User, Invoice, Boleto, BankConfig, TransactionHistory, CNABFile
 from services import XmlParser, BoletoBuilder, CnabService
+from validation import validate_cpf_cnpj, format_cpf, format_cnpj
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 from flask import send_file
 from typing import Optional, Tuple, List
 from functools import wraps
+from dotenv import load_dotenv
 import io
 import os
 import json
@@ -25,10 +27,21 @@ import csv
 import traceback
 import logging
 
+# Load environment variables from .env file
+load_dotenv()
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your_secret_key_here'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fidc.db'
-app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'uploads')
+
+# Configuration from environment variables
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_dev_key_CHANGE_IN_PRODUCTION')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///fidc.db')
+app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), os.getenv('UPLOAD_FOLDER', 'uploads'))
+app.config['CNAB_FOLDER'] = os.path.join(os.getcwd(), os.getenv('CNAB_FOLDER', 'cnab_files'))
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Create directories if they don't exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['CNAB_FOLDER'], exist_ok=True)
 
 db.init_app(app)
 login_manager = LoginManager(app)
@@ -429,6 +442,7 @@ def generate_boleto():
             due_date = datetime.now().date() + timedelta(days=5)
             
             # Bank-specific configuration
+            bank_type = bank_config.bank_type
             if bank_config.bank_type == 'santander':
                 bank_code = '033'
                 bank_name = 'Banco Santander'
@@ -451,10 +465,11 @@ def generate_boleto():
                 currency_code='9',
                 due_date=due_date,
                 amount=total_amount,
-                nosso_numero=str(nosso_numero).zfill(12),
+                nosso_numero=str(nosso_numero).zfill(11 if bank_type == 'bmp' else 12),
                 agency=bank_config.agency,
                 account=account_clean,
-                carteira=carteira
+                carteira=carteira,
+                bank_type=bank_type
             )
             
             # Create Boleto record
@@ -726,21 +741,53 @@ def generate_remessa_by_bank(bank_code):
             flash('Cedente não encontrado para os boletos selecionados', 'error')
             return redirect(url_for('agente_dashboard'))
         
+        # Get bank configuration to retrieve and increment sequencial
+        bank_type = 'santander' if bank_code == '033' else 'bmp'
+        bank_config = BankConfig.query.filter_by(
+            user_id=cedente_id,
+            bank_type=bank_type,
+            is_active=True
+        ).with_for_update().first()
+        
+        if not bank_config:
+            flash(f'Configuração bancária não encontrada para {get_bank_name(bank_code)}', 'error')
+            return redirect(url_for('agente_dashboard'))
+        
+        # Get and increment sequencial
+        sequencial = bank_config.sequencial_remessa
+        bank_config.sequencial_remessa += 1
+        
         # Determine bank type and generate appropriate file
         bank_name = get_bank_name(bank_code)
         if bank_code == '033':  # Santander
-            content = CnabService.generate_santander_240(boleto_group, cedente)
+            content, filename = CnabService.generate_santander_240(boleto_group, cedente, sequencial)
             cnab_type = "CNAB 240"
         elif bank_code == '274':  # BMP
-            content = CnabService.generate_bmp_400(boleto_group, cedente)
+            content, filename = CnabService.generate_bmp_400(boleto_group, cedente, sequencial)
             cnab_type = "CNAB 400"
         else:
             flash(f'Código de banco desconhecido: {bank_code}', 'error')
             return redirect(url_for('agente_dashboard'))
         
-        # Filename format: CB{DDMM}{SEQ}.REM (Cobrança Bancária + Date + Sequence)
-        seq = str(len(boleto_group)).zfill(4)
-        filename = f"CB{datetime.now().strftime('%d%m')}{seq}.REM"
+        # Save CNAB file to disk
+        file_path = os.path.join(app.config['CNAB_FOLDER'], filename)
+        with open(file_path, 'w', encoding='iso-8859-1', errors='replace') as f:
+            f.write(content)
+        
+        # Calculate total amount
+        total_amount = sum(b.amount for b in boleto_group)
+        
+        # Save CNAB file record to database
+        cnab_file = CNABFile(
+            user_id=cedente_id,
+            bank_type=bank_type,
+            filename=filename,
+            file_path=file_path,
+            sequencial=sequencial,
+            boleto_count=len(boleto_group),
+            total_amount=total_amount
+        )
+        db.session.add(cnab_file)
         
         # Update boleto status and log transactions
         for boleto in boleto_group:
@@ -753,19 +800,24 @@ def generate_remessa_by_bank(bank_code):
                 'filename': filename
             })
         
+        # Log CNAB file generation
+        log_transaction('cnab_file', cnab_file.id, 'created', {
+            'filename': filename,
+            'bank': bank_name,
+            'cnab_type': cnab_type,
+            'boleto_count': len(boleto_group),
+            'total_amount': total_amount,
+            'sequencial': sequencial
+        })
+        
         db.session.commit()
         
         flash(f'Arquivo de remessa gerado com sucesso para {len(boleto_group)} boleto(s) - {bank_name} {cnab_type}', 'success')
         logger.info(f"Remittance file {filename} generated for {len(boleto_group)} boletos by user {current_user.id}")
         
-        # Send file
-        mem = io.BytesIO()
-        # CNAB files should use Windows line endings (CRLF) and ISO-8859-1 encoding
-        mem.write(content.encode('iso-8859-1', errors='replace'))
-        mem.seek(0)
-        
+        # Send file (read from disk)
         return send_file(
-            mem,
+            file_path,
             as_attachment=True,
             download_name=filename,
             mimetype='text/plain'
