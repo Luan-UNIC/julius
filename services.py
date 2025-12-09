@@ -462,7 +462,7 @@ class CnabService:
 
             d += instr1  # 157-158: Instrução 1
             d += instr2  # 159-160: Instrução 2
-            
+
             # Juros
             val_juros = 0
             if boleto_config.juros_percent:
@@ -830,6 +830,15 @@ class BoletoBuilder:
         labels2 = ["Uso do Banco", "Carteira", "Espécie", "Quantidade", "Valor"]
         values2 = ["", boleto_data.get('carteira', 'N/A'), "R$", "", ""]
         
+        # Update values for Quantity and Value
+        values2 = [
+            "",
+            boleto_data.get('carteira', 'N/A'),
+            "R$",
+            boleto_data.get('quantity', ''),
+            boleto_data.get('unit_value', '')
+        ]
+
         for i, (label, value) in enumerate(zip(labels2, values2)):
             c.setFont("Helvetica", 6)
             c.drawString(x_pos + 1*mm, box_y - 3*mm, label)
@@ -854,8 +863,14 @@ class BoletoBuilder:
         c.drawString(left_margin + 1*mm, box_y - 3*mm, "Instruções (Texto de responsabilidade do beneficiário)")
         c.setFont("Helvetica", 7)
         
-        instructions = boleto_data.get('instructions', 'Não receber após o vencimento')
-        c.drawString(left_margin + 1*mm, box_y - 8*mm, instructions)
+        instructions = boleto_data.get('instructions', [])
+        if isinstance(instructions, str):
+            instructions = [instructions]
+
+        inst_y = box_y - 8*mm
+        for line in instructions:
+            c.drawString(left_margin + 1*mm, inst_y, str(line))
+            inst_y -= 3*mm
         
         # Additional value fields on the right
         y -= 40 * mm

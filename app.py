@@ -481,15 +481,37 @@ def generate_boleto():
                 'sacado': sacado_name
             })
             
-            # Link invoices
+            # Link invoices and get address
+            sacado_address_info = ""
             for inv in inv_list:
                 inv.boleto_id = boleto.id
                 inv.status = 'boleto_generated'
+                if inv.sacado_address:
+                    sacado_address_info = f"{inv.sacado_address}, {inv.sacado_neighborhood}, {inv.sacado_city}-{inv.sacado_state} {inv.sacado_zip}"
                 log_transaction('invoice', inv.id, 'updated', {
                     'status': 'boleto_generated',
                     'boleto_id': boleto.id
                 })
             
+            # Generate Instructions based on BankConfig
+            instructions_list = []
+            if bank_config.multa_percent and bank_config.multa_percent > 0:
+                instructions_list.append(f"Cobrar multa de {bank_config.multa_percent:.2f}% após o vencimento.")
+
+            if bank_config.juros_percent and bank_config.juros_percent > 0:
+                # Calculate daily interest value roughly for info
+                juros_dia = (total_amount * (bank_config.juros_percent / 100)) / 30
+                instructions_list.append(f"Cobrar juros de {bank_config.juros_percent:.2f}% ao mês (R$ {juros_dia:.2f} ao dia).")
+
+            if bank_config.protesto_dias and bank_config.protesto_dias > 0:
+                instructions_list.append(f"Protestar após {bank_config.protesto_dias} dias do vencimento.")
+
+            if bank_config.baixa_dias and bank_config.baixa_dias > 0:
+                instructions_list.append(f"Baixar/Devolver após {bank_config.baixa_dias} dias do vencimento.")
+
+            if not instructions_list:
+                instructions_list.append("Não receber após o vencimento.")
+
             # Generate PDF
             pdf_filename = f"boleto_{boleto.id}.pdf"
             pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
@@ -497,24 +519,34 @@ def generate_boleto():
             if not os.path.exists(app.config['UPLOAD_FOLDER']):
                 os.makedirs(app.config['UPLOAD_FOLDER'])
             
+            # Construct Cedente Address
+            cedente_address = ""
+            if current_user.address_street:
+                cedente_address = f"{current_user.address_street}, {current_user.address_number}"
+                if current_user.address_complement:
+                    cedente_address += f" {current_user.address_complement}"
+                cedente_address += f" - {current_user.address_neighborhood}, {current_user.address_city}-{current_user.address_state} {current_user.address_zip}"
+
             BoletoBuilder.generate_pdf({
                 'bank_name': bank_name,
                 'bank_code': bank_code,
                 'digitable_line': digitable_line,
-                'cedente_name': current_user.username,
-                'cedente_doc': '00.000.000/0000-00',  # TODO: Add to user model
-                'cedente_address': 'Endereço não cadastrado',
+                'cedente_name': current_user.razao_social or current_user.username,
+                'cedente_doc': current_user.cnpj or '',
+                'cedente_address': cedente_address,
                 'agency_account': f"{bank_config.agency}/{account_clean}",
                 'carteira': carteira,
                 'due_date': due_date,
                 'amount': total_amount,
                 'sacado_name': sacado_name,
                 'sacado_doc': doc,
-                'sacado_address': 'Endereço não cadastrado',
+                'sacado_address': sacado_address_info,
                 'barcode': barcode,
                 'nosso_numero': formatted_nn,
                 'doc_number': f"INV-{boleto.id}",
-                'instructions': 'Não receber após o vencimento. Sujeito a multa e juros de mora.'
+                'instructions': instructions_list,
+                'quantity': "1",
+                'unit_value': f"{total_amount:.2f}"
             }, pdf_path)
             
             generated_count += 1
